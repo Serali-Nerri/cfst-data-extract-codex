@@ -24,6 +24,21 @@ Grouped average measured capacities are still usable specimen-level experimental
 In that case, store the same `n_exp` on each member row, mark each affected specimen with `quality_flags += ["group_average_n_exp"]`, and make `source_evidence` plus `evidence.value_origin.n_exp` state clearly that the value is a group average rather than an individually measured row value.
 If a paper reports only grouped averages but the member-to-row mapping is not defensibly recoverable, those loads are not usable specimen-level capacity data.
 
+### 1.1 Repeated-Specimen Group-Average Expansion
+
+When a design/specimen table states that a reported group has `quantity = q`, but the results table reports only one average capacity row for that same group:
+
+- treat the paper's printed identifier as the reported group label, not yet as the final unique specimen label
+- expand the group into `q` specimen rows
+- use the canonical naming rule `G-1`, `G-2`, ..., `G-q` where `G` is the paper's reported group label
+- copy the shared design/material fields to each member row
+- assign the same reported average `n_exp` to each member row
+- mark every expanded row with `quality_flags += ["group_average_n_exp"]`
+- make `source_evidence` and `evidence.value_origin.n_exp` explicitly say that the stored `n_exp` is a reported group average and cite both the member-count source and the result-table source
+- compute `paper_level.expected_specimen_count` from the expanded member count, not from the number of reported result-table rows
+
+Do not improvise alternative suffix styles such as `a/b`, `#1/#2`, or repeated identical labels. If defensible group membership still cannot be recovered, fail extraction instead of fabricating member rows.
+
 ## 2. Ordinary-CFST Gate
 
 The ordinary gate uses a two-tier, specimen-level evaluation model. Each specimen is individually tagged `is_ordinary=true` or `is_ordinary=false`. The paper-level `is_ordinary_cfst` is derived: `true` when the paper contains at least one ordinary specimen, `false` otherwise.
@@ -58,6 +73,29 @@ Typical ordinary specimens:
 - recycled aggregate concrete with explicit `R%` and carbon-steel tube
 - static monotonic axial or single-direction eccentric compression
 
+### 2.2.1 Control Specimens And Strengthening Mapping
+
+Before building `Group_A`, `Group_B`, or `Group_C`, first partition the paper's tested specimens into:
+
+- CFST specimens that belong in the extraction output
+- non-CFST controls that must be excluded from specimen output entirely
+
+Exclude non-CFST controls before ordinary tagging. Typical exclusions:
+
+- hollow steel tube
+- bare steel tube
+- empty steel tube
+- plain steel control
+- steel-only comparison specimens without concrete infill
+
+For the kept CFST specimens, use these ordinary-exclusion mappings:
+
+- external jackets, welded cover plates, bonded reinforcement, section-enlarging plates, and internal or welded stiffeners that materially change the member system: `strengthened_section`
+- rings, clamps, ties, hoops, or other added confinement devices whose primary role is extra confinement rather than restoring the base CFST section: `confinement_device`
+- internal U-shaped stiffeners,拉结件,加劲肋, or similar added steel details that materially alter the wall-restraint mechanism: default to `strengthened_section` unless the paper clearly defines them as a separate confinement device
+
+When the paper's wording is ambiguous, prefer a conservative non-ordinary classification over silently treating the specimen as ordinary, and explain the decision in `source_evidence`.
+
 ### 2.3 Specimen Exclusion Tagging
 
 When a specimen fails Tier 2, set `is_ordinary=false` and record each failing condition in `ordinary_exclusion_reasons`. Common reasons:
@@ -72,7 +110,7 @@ When a specimen fails Tier 2, set `is_ordinary=false` and record each failing co
 - `confinement_device`
 - `strengthened_section`
 
-A paper with mixed ordinary and non-ordinary specimens keeps all specimens in the output. Ordinary specimens get `is_ordinary=true`; non-ordinary specimens get `is_ordinary=false` with reasons.
+A paper with mixed ordinary and non-ordinary CFST specimens keeps all CFST specimens in the output. Ordinary specimens get `is_ordinary=true`; non-ordinary CFST specimens get `is_ordinary=false` with reasons. Non-CFST control specimens are excluded before `Group_A` / `Group_B` / `Group_C` construction and must not be written as specimen rows.
 
 ### 2.4 Paper-Level Derivation
 
@@ -382,7 +420,7 @@ Every specimen row in `Group_A`, `Group_B`, or `Group_C` must contain:
 ### 6.2 Field Semantics
 
 - `ref_no`: fixed empty string `""`
-- `specimen_label`: unique, non-empty specimen ID
+- `specimen_label`: unique, non-empty specimen ID; when expanding a repeated-specimen group average, use the canonical form `reported_group_label-1 ... reported_group_label-q`
 - `boundary_condition`: trace metadata for the specimen support/end condition; may be `null` or `unknown`
 - `fc_value`: source concrete strength value in MPa
 - `fc_type`: source concrete specimen description, for example `Cube 150`, `Cylinder 100x200`, or `Prism 150x150x300`
@@ -418,7 +456,7 @@ Invalid examples:
 - `b`, `h`, `t`, `r0`, `L`, `e1`, `e2`: numbers stored in mm
 - `L`: project geometric specimen length in mm; do not reinterpret it as effective length
 - `n_exp`: experimental ultimate load in kN
-- when `n_exp` comes from an explicitly reported group average for repeated specimens, assign that same average to each defensibly identified member row and mark `quality_flags += ["group_average_n_exp"]`
+- when `n_exp` comes from an explicitly reported group average for repeated specimens, assign that same average to each defensibly identified member row, name those rows using the canonical `G-1 ... G-q` rule, mark `quality_flags += ["group_average_n_exp"]`, and make both `source_evidence` and `evidence.value_origin.n_exp` say that the stored value is a group average
 - `source_evidence`: concise human-readable trace string
 - `loading_pattern`: the loading pattern for this specific specimen (`monotonic`, `cyclic`, `repeated`, or `unknown`); when the paper uses a single loading pattern for all specimens, every specimen receives the same value; when the paper mixes patterns, each specimen records its own
 - `is_ordinary`: boolean indicating whether this specimen qualifies for the ordinary CFST dataset; derived from the two-tier evaluation in §2
@@ -577,6 +615,19 @@ Example:
   }
 }
 ```
+
+### 7.2 Field-Level Evidence Priority
+
+Use these field-level source priorities before doing open-ended cross-page search:
+
+- `n_exp`: results table first; if the paper says the stored value is an average, also cite the nearby result-description paragraph that defines the averaging rule
+- `fc_value` / `fc_basis`: material-properties section, concrete-properties table, notation section, and nearby table footnotes before shorthand symbols
+- `fy`: steel material-property table or specimen-property table before back-solving from stress ratios
+- `L`: explicit specimen table/text first; explicit ratio/formula second; figure-based derivation only when the geometry labels make it unambiguous
+- `loading_mode` / `loading_pattern`: setup figure plus loading-program section before abstract-level wording
+- control-versus-CFST classification: specimen/design table plus nearby material/section description before ordinary-filter logic
+
+When two sources disagree, prefer the higher-priority source and record the conflict in `source_evidence` rather than silently blending them.
 
 ## 8. Loading-Mode Rules
 

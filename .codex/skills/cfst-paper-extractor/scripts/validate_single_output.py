@@ -113,6 +113,8 @@ FC_TYPE_SIZED_PATTERN = re.compile(
     re.IGNORECASE,
 )
 FC_TYPE_DISALLOWED_SYMBOL_PATTERN = re.compile(r"\b(f'?c|fc'|fcu|fck|fcm|fcd)\b", re.IGNORECASE)
+GROUP_AVERAGE_HINT_PATTERN = re.compile(r"(group\s*average|average|avg|mean|平均|均值)", re.IGNORECASE)
+GROUP_AVERAGE_LABEL_PATTERN = re.compile(r".+-\d+$")
 
 
 def _as_bool(value: str) -> bool:
@@ -484,6 +486,38 @@ def _validate_specimen(
 
     if "evidence" in specimen:
         _validate_evidence(tag, specimen["evidence"], errors)
+
+    flags = specimen.get("quality_flags") if isinstance(specimen.get("quality_flags"), list) else []
+    if "group_average_n_exp" in flags:
+        label = specimen.get("specimen_label")
+        if isinstance(label, str) and label.strip() and GROUP_AVERAGE_LABEL_PATTERN.fullmatch(label.strip()) is None:
+            warnings.append(
+                f"`{tag}.specimen_label` is flagged `group_average_n_exp` but does not follow the "
+                "recommended expanded-member form like `G-1`."
+            )
+
+        source_evidence = specimen.get("source_evidence")
+        if isinstance(source_evidence, str) and GROUP_AVERAGE_HINT_PATTERN.search(source_evidence) is None:
+            warnings.append(
+                f"`{tag}.source_evidence` should state that `n_exp` is a reported group average."
+            )
+
+        evidence = specimen.get("evidence")
+        value_origin = evidence.get("value_origin") if isinstance(evidence, dict) else None
+        n_exp_origin = value_origin.get("n_exp") if isinstance(value_origin, dict) else None
+        if not isinstance(n_exp_origin, dict):
+            warnings.append(
+                f"`{tag}` is flagged `group_average_n_exp` and should include "
+                "`evidence.value_origin.n_exp`."
+            )
+        else:
+            origin_text = " ".join(
+                str(n_exp_origin.get(key) or "") for key in ("raw_text", "formula", "source")
+            )
+            if GROUP_AVERAGE_HINT_PATTERN.search(origin_text) is None:
+                warnings.append(
+                    f"`{tag}.evidence.value_origin.n_exp` should explain that the stored value is a group average."
+                )
 
     for key in ("fc_value", "fy", "b", "h", "t", "L", "n_exp"):
         if key in specimen and _is_number(specimen[key]) and specimen[key] <= 0:

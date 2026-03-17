@@ -157,8 +157,9 @@ Execution rules:
 - Write exactly one JSON file on disk, at `temp_json_host_path`.
 - Do not create or modify a worktree-local relative `runs/...` JSON path.
 - `temp_json_workspace_path` is the sandbox-visible path of that same file after `output_host_path` is bound into `output_dir`.
-- Read the paper using this sequence: `pdf_info` → `pdf_text` (text-layer index for page search) → `pdf_pages(paths_only=true)` (render target pages) → `view_image` (inspect page images one at a time).
+- Read the paper using this sequence: `pdf_info` → `pdf_text` (text-layer index for page search) → optional `pdf_montage` (cross-page comparison only) → `pdf_pages(paths_only=true)` (render target pages) → `view_image` (inspect page images one at a time).
 - Use the text layer from `pdf_text` only for locating target pages by keyword search. Do not extract specimen values from the text layer.
+- Use `pdf_montage` only for navigation/comparison. Read specimen values only from single-page rendered images via `view_image`.
 - Read values directly from the rendered PDF page images via `view_image`. The page image is the single source of truth.
 - Run the validation command exactly as written below; do not rewrite paths or create a second output location.
 - After writing JSON, validate inside the sandbox with:
@@ -276,10 +277,13 @@ python .codex/skills/cfst-paper-extractor/scripts/checkpoint_output_commits.py \
 - Worker-authoritative sources are the owned paper PDF, `references/extraction-rules.md`, `references/single-flow.md`, and the parent-supplied worker brief.
 - Do not inspect `SKILL.md`, `scripts/`, `runs/`, prior outputs, or other papers to infer schema, validation, or path behavior. Only inspect a named helper script when a concrete runtime blocker remains unresolved after following the documented command.
 - When both `temp_json_workspace_path` and `temp_json_host_path` are provided, write the JSON on disk to `temp_json_host_path` and validate that same file through `temp_json_workspace_path` inside the sandbox bind mount.
-- Read the paper using `pdf_info` → `pdf_text` → `pdf_pages(paths_only=true)` → `view_image`. Use text layer for page navigation only.
+- Read the paper using `pdf_info` → `pdf_text` → optional `pdf_montage` → `pdf_pages(paths_only=true)` → `view_image`. Use text layer for page navigation only.
+- Use `pdf_montage` only for cross-page comparison and navigation. Do not read specimen values from montage images.
 - Read values directly from the rendered PDF page images via `view_image`. The PDF page image is the single source of truth for all specimen values.
 - Resolve `fc_basis` by following `references/extraction-rules.md` `## 8. Concrete-Strength Basis Rules`. Before interpreting symbols such as `fck`, `fc`, `f'c`, or `Fc`, first search nearby material/property text, table headers, and footnotes for code-defined grade notation such as Chinese `C30`, `C40`, `C50`, `C60` or Eurocode `C60/75`. In Chinese GB/T context, those `Cxx` grades sit above nearby bare `fck` / `fc` symbols in the priority order; when the reported measured value clearly matches the cube-strength system, keep `fc_type` consistent with that stored value instead of mirroring sloppy symbol usage. Do not assign `fc_basis` without consulting those rules.
 - Keep `fc_type` in validator-compatible form only: `cube`, `cylinder`, `prism`, `unknown`, or sized forms such as `Cube 150` or `Cylinder 100x200`. Never store symbolic notation like `fck/fcu/f'c/fc` or explanatory phrases in `fc_type`.
+- Exclude non-CFST controls such as hollow steel tube / bare steel tube / empty steel tube specimens before building `Group_A` / `Group_B` / `Group_C`.
+- When a repeated-specimen group reports only one average result row, expand it with the canonical `G-1 ... G-q` naming rule and record the average-result nature in both `source_evidence` and `evidence.value_origin.n_exp`.
 - Inside the worker sandbox, use `scripts/safe_calc.py` for conversions, rounding, and derived values; do not do ad hoc arithmetic.
 - Preserve eccentricity signs exactly as source evidence shows them.
 - Do not exclude ordinary CFST specimens from the dataset based on the sign pattern of `e1` and `e2` alone.

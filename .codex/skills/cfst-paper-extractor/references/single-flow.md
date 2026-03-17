@@ -13,7 +13,7 @@ Section map:
 
 - process exactly one paper PDF
 - treat the parent-supplied worker brief plus this file and `references/extraction-rules.md` as the complete worker contract
-- read the owned paper through the `pdf_text`, `pdf_pages`, and `view_image` tools; run sandbox-only helpers only through the parent-provided `worker_sandbox.py` command
+- read the owned paper through the `pdf_text`, `pdf_montage`, `pdf_pages`, and `view_image` tools as needed; run sandbox-only helpers only through the parent-provided `worker_sandbox.py` command
 - use `pdf_text` output only for page navigation and keyword search; never extract specimen values from the text layer
 - `scripts/safe_calc.py` and `scripts/validate_single_output.py` require `CFST_SANDBOX=1`; do not call them directly from the parent shell
 - read only the owned paper PDF and the two worker references by default
@@ -33,7 +33,7 @@ The worker receives:
 - `paper_pdf_path`: absolute path to the PDF file on the host filesystem — use this path when calling `pdf_info`, `pdf_text`, and `pdf_pages` MCP tools
 - `paper_pdf_relpath`: relative path to the PDF file under the worktree root — use this path in sandbox commands (`--paper-dir-relpath`)
 
-The PDF is read through the `pdf_text` MCP tool (for text-layer page navigation) and `view_image` (for page image inspection). Use `pdf_pages` with `paths_only=true` to render pages to cached images without loading them into context.
+The PDF is read through the `pdf_text` MCP tool (for text-layer page navigation) and `view_image` (for page image inspection). Use `pdf_pages` with `paths_only=true` to render pages to cached images without loading them into context. Use `pdf_montage` only as a navigation/comparison aid when several already-identified pages need to be seen side by side.
 
 Long paper filenames are allowed and do not need to be renamed.
 
@@ -45,31 +45,46 @@ If the PDF file does not exist at the given path or cannot be read by the MCP to
 2. Verify the paper PDF exists at the given path.
 3. Call `pdf_info` on the paper PDF to get the total page count.
 4. Call `pdf_text` to extract the text-layer index for the entire paper.
-   - If `text_quality < 0.3`, proceed with image-only scanning (fall back to
-     `pdf_pages` with `paths_only=true` + `view_image` for page-by-page
-     visual search).
+   - If `text_quality < 0.3`, proceed with image-first scanning.
+   - If you call MCP tools from `js_repl` via `codex.tool(...)`, remember that JSON-like tool payloads are typically exposed through `output.content[0].text`, not a direct `result` field.
 5. Search the text index for keywords to locate target pages:
    - specimen tables: "Table", "表", "Specimen", "试件"
    - material properties: "Material", "Concrete", "材料", "混凝土", "C30"–"C80"
    - setup/loading figures: "Fig", "Figure", "图", "loading", "setup", "test"
    - paper metadata: title, authors, abstract on page 1
-6. Call `pdf_pages(paths_only=true)` on the identified target pages to render and cache them without injecting images into context.
-7. Use `view_image` on each target page path to inspect it visually. Read values directly from the rendered page images. The page image is the single source of truth for all specimen values.
-8. Identify specimen-bearing tables and setup/loading figures from the viewed page images.
-9. Resolve concrete-strength basis evidence from `Materials`, `Specimens`, `Concrete properties`, notation sections, and table footnotes before assigning `fc_basis`. First search for nearby concrete-strength-grade signals such as `C30`, `C40`, `C50`, `C60`, or `C60/75`, then interpret symbols such as `fck`, `fc`, `f'c`, or `Fc`.
-10. Run the validity gate.
-11. Run the ordinary-CFST Tier 1 paper-level preconditions.
-12. Resolve the setup figure from PDF page image evidence.
-13. Extract specimen rows directly from PDF page images.
-14. When a paper reports grouped average measured capacity for an explicit repeated-specimen group, assign that same average `n_exp` to each defensibly identified member row and mark `group_average_n_exp`.
-15. Normalize units and derived values with `scripts/safe_calc.py`.
-16. Run the ordinary-CFST Tier 2 per-specimen evaluation and tag each specimen with `is_ordinary` and `ordinary_exclusion_reasons`.
-17. Derive paper-level `is_ordinary_cfst` and `ordinary_filter` summary from specimen flags.
-18. Build schema v2.1 JSON.
-19. Write that JSON on disk to `temp_json_host_path` from the worker brief. Do not create a worktree-local relative `runs/...` JSON path.
-20. Validate that same file through `temp_json_workspace_path` with the parent-provided `worker_sandbox.py` command.
-21. If validation fails for schema, data, or evidence reasons, repair once, overwrite the same host-backed JSON path, and validate once more.
-22. If validation fails for path, mount, sandbox startup, or ownership reasons, stop and report the failure; do not relocate the JSON and do not create a second copy elsewhere.
+6. Build an internal evidence-anchor checklist before extraction:
+   - `design_table_page`
+   - `results_table_page`
+   - `replicate_average_rule_page`
+   - `setup_figure_page`
+   - `loading_program_page`
+   - `concrete_basis_page`
+   - `steel_properties_page`
+7. Use `pdf_montage` only when it helps compare already-identified pages side by side.
+   - montage is for navigation/comparison only, never for final value reading
+   - low DPI broad scanning is optional and conditional; if you need it, prefer roughly `150-200 dpi`
+8. Call `pdf_pages(paths_only=true)` on the identified target pages to render and cache them without injecting images into context.
+   - use normal single-page reading at about `300 dpi`
+   - if a page has small headers, footnotes, merged cells, or symbol ambiguity, rerender that page at higher DPI before reading values
+9. Use `view_image` on each target page path to inspect it visually. Read values directly from the rendered single-page images. The single-page image is the source of truth for all specimen values.
+10. Identify specimen-bearing tables, setup/loading figures, grouped-average notes, and non-CFST control rows from the viewed page images.
+11. Resolve concrete-strength basis evidence from `Materials`, `Specimens`, `Concrete properties`, notation sections, and table footnotes before assigning `fc_basis`. First search for nearby concrete-strength-grade signals such as `C30`, `C40`, `C50`, `C60`, or `C60/75`, then interpret symbols such as `fck`, `fc`, `f'c`, or `Fc`.
+12. Run the validity gate.
+13. Build the specimen universe for this paper.
+   - keep only CFST specimens for `Group_A` / `Group_B` / `Group_C`
+   - exclude hollow steel tube / bare steel tube / empty steel tube / other non-CFST controls before ordinary tagging
+14. Run the ordinary-CFST Tier 1 paper-level preconditions.
+15. Resolve the setup figure from PDF page image evidence.
+16. Extract specimen rows directly from PDF page images.
+17. When a paper reports grouped average measured capacity for an explicit repeated-specimen group, expand the reported group label `G` into `G-1 ... G-q`, assign that same average `n_exp` to each defensibly identified member row, and mark `group_average_n_exp`.
+18. Normalize units and derived values with `scripts/safe_calc.py`.
+19. Run the ordinary-CFST Tier 2 per-specimen evaluation and tag each specimen with `is_ordinary` and `ordinary_exclusion_reasons`.
+20. Derive paper-level `is_ordinary_cfst` and `ordinary_filter` summary from specimen flags.
+21. Build schema v2.1 JSON.
+22. Write that JSON on disk to `temp_json_host_path` from the worker brief. Do not create a worktree-local relative `runs/...` JSON path.
+23. Validate that same file through `temp_json_workspace_path` with the parent-provided `worker_sandbox.py` command.
+24. If validation fails for schema, data, or evidence reasons, repair once, overwrite the same host-backed JSON path, and validate once more.
+25. If validation fails for path, mount, sandbox startup, or ownership reasons, stop and report the failure; do not relocate the JSON and do not create a second copy elsewhere.
 
 ## 4. Validity Gate
 
@@ -92,6 +107,8 @@ For invalid papers:
 ## 5. Ordinary-CFST Gate (Two-Tier, Specimen-Level)
 
 Even when `is_valid=true`, evaluate each specimen individually for ordinary-CFST inclusion using the two-tier model defined in `references/extraction-rules.md` section 2.
+
+The ordinary gate applies only to the kept CFST specimen rows. Non-CFST controls are excluded before this stage and must not be written into `Group_A`, `Group_B`, or `Group_C`.
 
 ### Tier 1 -- Paper-Level Preconditions
 
@@ -148,10 +165,15 @@ Store the resolved setup trace in:
 
 The worker reads the paper using a text-first, image-second approach:
 1. `pdf_text` extracts a text-layer index for page navigation and keyword search.
-2. `pdf_pages(paths_only=true)` renders target pages to cached image files.
-3. `view_image` loads individual page images for visual inspection.
+2. `pdf_montage` may be used on already-identified pages for side-by-side comparison.
+3. `pdf_pages(paths_only=true)` renders target pages to cached image files.
+4. `view_image` loads individual page images for visual inspection.
 
 The text layer is a navigation aid only. Do not extract specimen values from it.
+
+`pdf_montage` is also a navigation aid only. Use it to compare a few pages side by side, not to read specimen values.
+
+When `pdf_text` cannot localize the paper reliably, you may do a low-DPI visual sweep to find candidate pages. Treat that sweep as page discovery only. Re-render any page that supplies specimen values, table headers, footnotes, or row boundaries at normal or high DPI and confirm those values through single-page `view_image`.
 
 The page image is the single source of truth for all specimen values including row boundaries, merged cells, units, symbols, and signs.
 
