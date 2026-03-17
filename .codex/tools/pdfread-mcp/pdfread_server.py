@@ -413,6 +413,115 @@ async def pdf_text(path: str, max_pages: int = 80) -> str:
     )
 
 
+@mcp.tool(
+    name="pdf_montage",
+    annotations=ToolAnnotations(
+        title="Montage PDF Pages into One Image",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def pdf_montage(
+    path: str,
+    pages: str,
+    cols: int = 2,
+    dpi: int = 200,
+    label: bool = True,
+) -> list:
+    """Combine selected PDF pages into a single side-by-side montage image.
+
+    Renders the requested pages, then tiles them into one composite image
+    using ImageMagick montage. Useful for cross-page comparison without
+    switching between individual page images.
+
+    This is a navigation/comparison aid only — do not use the montage
+    to extract specimen values. Use view_image on individual pages for
+    that purpose.
+
+    Args:
+        path: Absolute path to the PDF file.
+        pages: Page specification. Examples: "26,27,54,55" or "3-6".
+               Maximum 8 pages per montage.
+        cols: Number of columns in the tile grid. Defaults to 2.
+              Rows are computed automatically.
+        dpi: Rendering resolution for individual pages before tiling.
+             Lower than pdf_pages default for smaller output.
+             Defaults to 200.
+        label: When True, overlay the page number on each tile.
+               Defaults to True.
+
+    Returns:
+        A list containing:
+        - TextContent: JSON metadata with source pages and montage path
+        - ImageContent: the composite montage image
+    """
+    pdf_path = _validate_pdf_path(path)
+    total = _get_total_pages(pdf_path)
+
+    requested = _parse_page_ranges(pages, total)
+    if not requested:
+        raise ValueError(
+            f"No valid pages in '{pages}'. PDF has {total} pages (1-{total})."
+        )
+    if len(requested) > 8:
+        raise ValueError(
+            f"Montage supports at most 8 pages, got {len(requested)}. "
+            "Narrow your selection."
+        )
+
+    cols = max(1, min(cols, len(requested)))
+
+    # Render individual pages (reuses cache)
+    page_paths: list[Path] = []
+    for pg in requested:
+        img = _render_page(pdf_path, pg, dpi, "png")
+        page_paths.append(img)
+
+    # Build montage output path in cache
+    cache_dir = _cache_dir_for(pdf_path)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    page_tag = "_".join(str(p) for p in requested)
+    montage_path = cache_dir / f"montage_{page_tag}_{dpi}dpi_{cols}c.png"
+
+    if not montage_path.exists():
+        cmd: list[str] = ["montage"]
+        for i, pp in enumerate(page_paths):
+            if label:
+                cmd.extend(["-label", f"Page {requested[i]}"])
+            cmd.append(str(pp))
+        cmd.extend([
+            "-tile", f"{cols}x",
+            "-geometry", "+4+4",
+            "-background", "white",
+            "-border", "2",
+            "-bordercolor", "#cccccc",
+        ])
+        if label:
+            cmd.extend(["-font", "DejaVu-Sans", "-pointsize", "14"])
+        cmd.append(str(montage_path))
+
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if proc.returncode != 0:
+            raise RuntimeError(f"montage failed: {proc.stderr.strip()}")
+
+    metadata = {
+        "ok": True,
+        "path": str(pdf_path),
+        "total_pages": total,
+        "montage_pages": requested,
+        "cols": cols,
+        "dpi": dpi,
+        "montage_path": str(montage_path),
+    }
+
+    return [
+        TextContent(type="text", text=json.dumps(metadata, ensure_ascii=False)),
+        Image(path=str(montage_path)),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------

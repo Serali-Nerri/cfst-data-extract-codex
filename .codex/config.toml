@@ -18,5 +18,5 @@ args = [".codex/tools/pdfread-mcp/pdfread_server.py"]
 cwd = "/home/thelya/tmp/tmp"
 startup_timeout_sec = 20
 tool_timeout_sec = 120
-enabled_tools = ["pdf_info", "pdf_pages", "pdf_text"]
+enabled_tools = ["pdf_info", "pdf_pages", "pdf_text", "pdf_montage"]
 
