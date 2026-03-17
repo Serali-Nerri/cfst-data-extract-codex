@@ -1,0 +1,4 @@
+interface:
+  display_name: "CFST Paper Extractor"
+  short_description: "Extract, validate, and publish CFST JSON"
+  default_prompt: "Use $cfst-paper-extractor to prepare processed CFST paper folders, follow the parent playbook for isolated one-paper extraction, keep worker agents on the owned paper folder plus the two worker references as their main contract, apply the skill's concrete-strength basis rules, validate schema-v2 outputs, and publish canonical JSON outputs."
