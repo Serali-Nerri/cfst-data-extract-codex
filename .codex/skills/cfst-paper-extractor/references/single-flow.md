@@ -13,13 +13,14 @@ Section map:
 
 - process exactly one paper PDF
 - treat the parent-supplied worker brief plus this file and `references/extraction-rules.md` as the complete worker contract
-- read the owned paper through the `pdf_text`, `pdf_montage`, `pdf_pages`, and `view_image` tools as needed; run sandbox-only helpers only through the parent-provided `worker_sandbox.py` command
+- read the owned paper through the canonical sequence `pdf_info` → `pdf_text` → optional `pdf_montage` → `pdf_pages` → `view_image`; run sandbox-only helpers only through the parent-provided `worker_sandbox.py` command
 - use `pdf_text` output only for page navigation and keyword search; never extract specimen values from the text layer
 - `scripts/safe_calc.py` and `scripts/validate_single_output.py` require `CFST_SANDBOX=1`; do not call them directly from the parent shell
 - read only the owned paper PDF and the two worker references by default
 - do not read `SKILL.md`, `runs/`, prior outputs, or `scripts/` to infer schema, validation, or path rules
 - when the parent provides both `temp_json_host_path` and `temp_json_workspace_path`, write the JSON on disk to `temp_json_host_path`; the workspace path is the sandbox-visible alias of that same file
 - never create or rely on a worktree-local relative `runs/...` JSON path
+- before building the final JSON, prepare one structured extraction draft at `output/tmp/<paper_id>/_scratch/extraction_draft.yaml`; do not write a second JSON artifact on disk
 - if a concrete runtime blocker remains unresolved after following the documented command, you may inspect the one named helper script involved and report that you did so
 - write only to the worker-local temp directory
 - never write directly to final published output
@@ -30,10 +31,18 @@ Section map:
 
 The worker receives:
 
-- `paper_pdf_path`: absolute path to the PDF file on the host filesystem — use this path when calling `pdf_info`, `pdf_text`, and `pdf_pages` MCP tools
+- `paper_id`: owned paper id
+- `worktree_path`: worker-local worktree root for sandbox execution
+- `paper_pdf_path`: absolute path to the PDF file on the host filesystem — use this path when calling `pdf_info`, `pdf_text`, `pdf_montage`, and `pdf_pages` MCP tools
 - `paper_pdf_relpath`: relative path to the PDF file under the worktree root — use this path in sandbox commands (`--paper-dir-relpath`)
+- `output_dir`: worker-local output directory inside the worktree
+- `output_host_path`: host-backed directory bound into `output_dir`
+- `temp_json_workspace_path`: sandbox-visible JSON path inside `output_dir`
+- `temp_json_host_path`: host-backed JSON path that must be written on disk
 
-The PDF is read through the `pdf_text` MCP tool (for text-layer page navigation) and `view_image` (for page image inspection). Use `pdf_pages` with `paths_only=true` to render pages to cached images without loading them into context. Use `pdf_montage` only as a navigation/comparison aid when several already-identified pages need to be seen side by side.
+These fields, plus the parent brief and the two worker references, should be enough to execute the paper without reading extra scripts or repository files for hidden rules.
+
+The canonical PDF-reading sequence is `pdf_info` → `pdf_text` → optional `pdf_montage` → `pdf_pages(paths_only=true)` → `view_image`. `pdf_text` returns a `cache_path` pointing to the MCP-managed cached text-layer JSON file and can optionally inline all pages, a preview subset, or only matched pages. Prefer metadata plus `cache_path` when you only need navigation. Use `pdf_montage` only as a navigation/comparison aid when several already-identified pages need to be seen side by side.
 
 Long paper filenames are allowed and do not need to be renamed.
 
@@ -45,6 +54,9 @@ If the PDF file does not exist at the given path or cannot be read by the MCP to
 2. Verify the paper PDF exists at the given path.
 3. Call `pdf_info` on the paper PDF to get the total page count.
 4. Call `pdf_text` to extract the text-layer index for the entire paper.
+   - prefer `include_pages=false` when you only need metadata, `cache_path`, and optional page-hit metadata
+   - use `preview_pages` only when you need a small inline preview
+   - use `match_query` plus `matched_pages_only=true` only when you intentionally want just the matched pages inline
    - If `text_quality < 0.3`, proceed with image-first scanning.
    - If you call MCP tools from `js_repl` via `codex.tool(...)`, remember that JSON-like tool payloads are typically exposed through `output.content[0].text`, not a direct `result` field.
 5. Search the text index for keywords to locate target pages:
@@ -60,31 +72,42 @@ If the PDF file does not exist at the given path or cannot be read by the MCP to
    - `loading_program_page`
    - `concrete_basis_page`
    - `steel_properties_page`
-7. Use `pdf_montage` only when it helps compare already-identified pages side by side.
+7. Build a structured extraction draft before final JSON assembly.
+   - write exactly one non-canonical scratch file at `output/tmp/<paper_id>/_scratch/extraction_draft.yaml`
+   - do not write a second JSON file on disk
+   - minimum recommended sections:
+     - `specimen_universe`
+     - `controls_policy`
+     - `replicate_policy`
+     - `materials_map`
+     - `results_map`
+     - `setup_trace`
+     - `ordinary_scope_notes`
+8. Use `pdf_montage` only when it helps compare already-identified pages side by side.
    - montage is for navigation/comparison only, never for final value reading
    - low DPI broad scanning is optional and conditional; if you need it, prefer roughly `150-200 dpi`
-8. Call `pdf_pages(paths_only=true)` on the identified target pages to render and cache them without injecting images into context.
+9. Call `pdf_pages(paths_only=true)` on the identified target pages to render and cache them without injecting images into context.
    - use normal single-page reading at about `300 dpi`
    - if a page has small headers, footnotes, merged cells, or symbol ambiguity, rerender that page at higher DPI before reading values
-9. Use `view_image` on each target page path to inspect it visually. Read values directly from the rendered single-page images. The single-page image is the source of truth for all specimen values.
-10. Identify specimen-bearing tables, setup/loading figures, grouped-average notes, and non-CFST control rows from the viewed page images.
-11. Resolve concrete-strength basis evidence from `Materials`, `Specimens`, `Concrete properties`, notation sections, and table footnotes before assigning `fc_basis`. First search for nearby concrete-strength-grade signals such as `C30`, `C40`, `C50`, `C60`, or `C60/75`, then interpret symbols such as `fck`, `fc`, `f'c`, or `Fc`.
-12. Run the validity gate.
-13. Build the specimen universe for this paper.
+10. Use `view_image` on each target page path to inspect it visually. Read values directly from the rendered single-page images. The single-page image is the source of truth for all specimen values.
+11. Identify specimen-bearing tables, setup/loading figures, grouped-average notes, and non-CFST control rows from the viewed page images.
+12. Resolve concrete-strength basis evidence from `Materials`, `Specimens`, `Concrete properties`, notation sections, and table footnotes before assigning `fc_basis`. First search for nearby concrete-strength-grade signals such as `C30`, `C40`, `C50`, `C60`, or `C60/75`, then interpret symbols such as `fck`, `fc`, `f'c`, or `Fc`.
+13. Run the validity gate.
+14. Build the specimen universe for this paper.
    - keep only CFST specimens for `Group_A` / `Group_B` / `Group_C`
    - exclude hollow steel tube / bare steel tube / empty steel tube / other non-CFST controls before ordinary tagging
-14. Run the ordinary-CFST Tier 1 paper-level preconditions.
-15. Resolve the setup figure from PDF page image evidence.
-16. Extract specimen rows directly from PDF page images.
-17. When a paper reports grouped average measured capacity for an explicit repeated-specimen group, expand the reported group label `G` into `G-1 ... G-q`, assign that same average `n_exp` to each defensibly identified member row, and mark `group_average_n_exp`.
-18. Normalize units and derived values with `scripts/safe_calc.py`.
-19. Run the ordinary-CFST Tier 2 per-specimen evaluation and tag each specimen with `is_ordinary` and `ordinary_exclusion_reasons`.
-20. Derive paper-level `is_ordinary_cfst` and `ordinary_filter` summary from specimen flags.
-21. Build schema v2.1 JSON.
-22. Write that JSON on disk to `temp_json_host_path` from the worker brief. Do not create a worktree-local relative `runs/...` JSON path.
-23. Validate that same file through `temp_json_workspace_path` with the parent-provided `worker_sandbox.py` command.
-24. If validation fails for schema, data, or evidence reasons, repair once, overwrite the same host-backed JSON path, and validate once more.
-25. If validation fails for path, mount, sandbox startup, or ownership reasons, stop and report the failure; do not relocate the JSON and do not create a second copy elsewhere.
+15. Run the ordinary-CFST Tier 1 paper-level preconditions.
+16. Resolve the setup figure from PDF page image evidence.
+17. Extract specimen rows directly from PDF page images.
+18. When a paper reports grouped average measured capacity for an explicit repeated-specimen group, expand the reported group label `G` into `G-1 ... G-q`, assign that same average `n_exp` to each defensibly identified member row, and mark `group_average_n_exp`.
+19. Normalize units and derived values with `scripts/safe_calc.py`.
+20. Run the ordinary-CFST Tier 2 per-specimen evaluation and tag each specimen with `is_ordinary` and `ordinary_exclusion_reasons`.
+21. Derive paper-level `is_ordinary_cfst` and `ordinary_filter` summary from specimen flags.
+22. Build schema-v2.1 JSON from `output/tmp/<paper_id>/_scratch/extraction_draft.yaml` plus the final page-image evidence.
+23. Write that JSON on disk to `temp_json_host_path` from the worker brief. Do not create a worktree-local relative `runs/...` JSON path.
+24. Validate that same file through `temp_json_workspace_path` with the parent-provided `worker_sandbox.py` command.
+25. If validation fails for schema, data, or evidence reasons, repair once, overwrite the same host-backed JSON path, and validate once more.
+26. If validation fails for path, mount, sandbox startup, or ownership reasons, stop and report the failure; do not relocate the JSON and do not create a second copy elsewhere.
 
 ## 4. Validity Gate
 
@@ -163,11 +186,12 @@ Store the resolved setup trace in:
 
 ## 7. Direct PDF Reading
 
-The worker reads the paper using a text-first, image-second approach:
-1. `pdf_text` extracts a text-layer index for page navigation and keyword search.
-2. `pdf_montage` may be used on already-identified pages for side-by-side comparison.
-3. `pdf_pages(paths_only=true)` renders target pages to cached image files.
-4. `view_image` loads individual page images for visual inspection.
+The worker reads the paper using a metadata-first, then text-and-image approach:
+1. `pdf_info` captures total-page metadata and supports page-planning.
+2. `pdf_text` extracts a text-layer index for page navigation and keyword search.
+3. `pdf_montage` may be used on already-identified pages for side-by-side comparison.
+4. `pdf_pages(paths_only=true)` renders target pages to cached image files.
+5. `view_image` loads individual page images for visual inspection.
 
 The text layer is a navigation aid only. Do not extract specimen values from it.
 
@@ -180,6 +204,23 @@ The page image is the single source of truth for all specimen values including r
 Do not extract specimen values from any text layer or OCR output. Read values directly from the rendered PDF page images.
 
 There is no separate markdown or table image layer to reconcile. The PDF page image is the authoritative evidence for every specimen-bearing table.
+
+### 7.1 `pdf_text` Template
+
+When using `pdf_text` through `js_repl`, use this wrapper shape instead of guessing the returned structure:
+
+```javascript
+const res = await codex.tool("mcp__pdfread__pdf_text", {
+  path: paper_pdf_path,
+  include_pages: false,
+  match_query: "Table"
+});
+const textIndex = JSON.parse(res.output.content[0].text);
+const cachePath = textIndex.cache_path;
+const hits = textIndex.matched_pages || [];
+```
+
+This note is specifically for `js_repl` + `codex.tool(...)`. Outside that wrapper, follow the runtime's normal tool-return convention. The returned object includes `cache_path`, which points to the MCP-managed on-disk JSON cache for the text layer, plus optional inline `pages` depending on `include_pages`, `preview_pages`, and `matched_pages_only`.
 
 ## 8. Concrete-Strength Basis Rules
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate one CFST extraction JSON against schema v2.1 rules.
+"""Validate one CFST extraction JSON against schema-v2.1 rules.
 
 This strict skill variant requires the validator to run inside worker_sandbox.py.
 """
@@ -114,7 +114,6 @@ FC_TYPE_SIZED_PATTERN = re.compile(
 )
 FC_TYPE_DISALLOWED_SYMBOL_PATTERN = re.compile(r"\b(f'?c|fc'|fcu|fck|fcm|fcd)\b", re.IGNORECASE)
 GROUP_AVERAGE_HINT_PATTERN = re.compile(r"(group\s*average|average|avg|mean|平均|均值)", re.IGNORECASE)
-GROUP_AVERAGE_LABEL_PATTERN = re.compile(r".+-\d+$")
 
 
 def _as_bool(value: str) -> bool:
@@ -394,6 +393,32 @@ def _validate_specimen(
         elif not specimen["specimen_label"].strip():
             errors.append(f"`{tag}.specimen_label` must be non-empty.")
 
+    if "reported_group_label" in specimen:
+        value = specimen["reported_group_label"]
+        if value is not None and not isinstance(value, str):
+            errors.append(f"`{tag}.reported_group_label` must be string or null.")
+        elif isinstance(value, str) and not value.strip():
+            errors.append(f"`{tag}.reported_group_label` must be non-empty when provided.")
+
+    if "replicate_index" in specimen:
+        value = specimen["replicate_index"]
+        if value is not None and not isinstance(value, int):
+            errors.append(f"`{tag}.replicate_index` must be integer or null.")
+        elif isinstance(value, int) and value <= 0:
+            errors.append(f"`{tag}.replicate_index` must be >= 1 when provided.")
+
+    if (
+        isinstance(specimen.get("specimen_label"), str)
+        and isinstance(specimen.get("reported_group_label"), str)
+        and isinstance(specimen.get("replicate_index"), int)
+    ):
+        expected_label = f"{specimen['reported_group_label'].strip()}-{specimen['replicate_index']}"
+        if specimen["specimen_label"].strip() != expected_label:
+            warnings.append(
+                f"`{tag}` has `reported_group_label`/`replicate_index`, but `specimen_label` "
+                f"is not the canonical `{expected_label}` form."
+            )
+
     if "section_shape" in specimen:
         shape = specimen["section_shape"]
         if not isinstance(shape, str):
@@ -489,13 +514,6 @@ def _validate_specimen(
 
     flags = specimen.get("quality_flags") if isinstance(specimen.get("quality_flags"), list) else []
     if "group_average_n_exp" in flags:
-        label = specimen.get("specimen_label")
-        if isinstance(label, str) and label.strip() and GROUP_AVERAGE_LABEL_PATTERN.fullmatch(label.strip()) is None:
-            warnings.append(
-                f"`{tag}.specimen_label` is flagged `group_average_n_exp` but does not follow the "
-                "recommended expanded-member form like `G-1`."
-            )
-
         source_evidence = specimen.get("source_evidence")
         if isinstance(source_evidence, str) and GROUP_AVERAGE_HINT_PATTERN.search(source_evidence) is None:
             warnings.append(

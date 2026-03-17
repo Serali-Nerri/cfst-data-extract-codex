@@ -139,7 +139,7 @@ def main() -> int:
         "--processed-root",
         type=Path,
         required=True,
-        help="Root containing processed PDF files matching [Ax-yy]*.pdf.",
+        help="Root containing processed PDF files whose names begin with citation tags like [A2-104] (pattern: ^\\[A\\d+-\\d+\\]).",
     )
     parser.add_argument(
         "--worktree-root",

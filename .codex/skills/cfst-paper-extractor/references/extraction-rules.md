@@ -31,6 +31,7 @@ When a design/specimen table states that a reported group has `quantity = q`, bu
 - treat the paper's printed identifier as the reported group label, not yet as the final unique specimen label
 - expand the group into `q` specimen rows
 - use the canonical naming rule `G-1`, `G-2`, ..., `G-q` where `G` is the paper's reported group label
+- when available in the schema, set `reported_group_label = G` and `replicate_index = 1..q` on the expanded rows
 - copy the shared design/material fields to each member row
 - assign the same reported average `n_exp` to each member row
 - mark every expanded row with `quality_flags += ["group_average_n_exp"]`
@@ -191,6 +192,8 @@ Use the schema description below as the worker's example source of truth. Do not
     {
       "ref_no": "",
       "specimen_label": "SC-1",
+      "reported_group_label": null,
+      "replicate_index": null,
       "section_shape": "circular",
       "loading_mode": "axial",
       "loading_pattern": "monotonic",
@@ -369,6 +372,11 @@ Every specimen row in `Group_A`, `Group_B`, or `Group_C` must contain:
 - `evidence`
 - `quality_flags`
 
+Optional specimen trace fields:
+
+- `reported_group_label`
+- `replicate_index`
+
 ### 6.1 Enumerations
 
 `section_shape`:
@@ -421,6 +429,8 @@ Every specimen row in `Group_A`, `Group_B`, or `Group_C` must contain:
 
 - `ref_no`: fixed empty string `""`
 - `specimen_label`: unique, non-empty specimen ID; when expanding a repeated-specimen group average, use the canonical form `reported_group_label-1 ... reported_group_label-q`
+- `reported_group_label`: optional original paper label for a repeated-specimen group or original paper row label; omit or set `null` for simple one-to-one rows when no separate group label needs preserving
+- `replicate_index`: optional positive integer replicate index used when one reported group label expands into multiple specimen rows; omit or set `null` for simple one-to-one rows
 - `boundary_condition`: trace metadata for the specimen support/end condition; may be `null` or `unknown`
 - `fc_value`: source concrete strength value in MPa
 - `fc_type`: source concrete specimen description, for example `Cube 150`, `Cylinder 100x200`, or `Prism 150x150x300`
@@ -457,6 +467,7 @@ Invalid examples:
 - `L`: project geometric specimen length in mm; do not reinterpret it as effective length
 - `n_exp`: experimental ultimate load in kN
 - when `n_exp` comes from an explicitly reported group average for repeated specimens, assign that same average to each defensibly identified member row, name those rows using the canonical `G-1 ... G-q` rule, mark `quality_flags += ["group_average_n_exp"]`, and make both `source_evidence` and `evidence.value_origin.n_exp` say that the stored value is a group average
+- when `reported_group_label` and `replicate_index` are present, they are traceability helpers; they do not replace the requirement that `specimen_label` stay unique and validator-safe
 - `source_evidence`: concise human-readable trace string
 - `loading_pattern`: the loading pattern for this specific specimen (`monotonic`, `cyclic`, `repeated`, or `unknown`); when the paper uses a single loading pattern for all specimens, every specimen receives the same value; when the paper mixes patterns, each specimen records its own
 - `is_ordinary`: boolean indicating whether this specimen qualifies for the ordinary CFST dataset; derived from the two-tier evaluation in §2

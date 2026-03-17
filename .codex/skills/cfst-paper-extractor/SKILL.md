@@ -1,12 +1,12 @@
 ---
 name: cfst-paper-extractor
-description: Extract specimen-level data from processed CFST paper PDFs into schema-v2 JSON, validate ordinary-CFST inclusion, provenance, and physical plausibility, orchestrate isolated one-paper workers, and publish canonical JSON outputs. Use when Codex needs to work from `processed/` PDF files, repair or review CFST JSON outputs.
+description: Extract specimen-level data from processed CFST paper PDFs into schema-v2.1 JSON, validate ordinary-CFST inclusion, provenance, and physical plausibility, orchestrate isolated one-paper workers, and publish canonical JSON outputs. Use when Codex needs to work from `processed/` PDF files, repair or review CFST JSON outputs.
 ---
 
 # CFST Paper Extractor
 
 Use only bundled files in this skill. Do not depend on external metadata manifests.
-The `processed/` directory contains PDF files matching `[Ax-yy]*.pdf`. Workers read these PDFs via the `pdf_text` (text-layer search), optional `pdf_montage` (cross-page comparison), `pdf_pages` (image rendering), and `view_image` (page inspection) tools.
+The `processed/` directory contains PDF files whose names begin with citation tags like `[A2-104]` (pattern: `^\[A\d+-\d+\]`). Workers read these PDFs through the canonical sequence `pdf_info` → `pdf_text` → optional `pdf_montage` → `pdf_pages` → `view_image`.
 
 ## Use This Workflow
 
@@ -120,7 +120,7 @@ Parent agents should not need to inspect `update_batch_state.py` source. Use onl
 - `--clear-last-error`: clear `last_error` on a clean transition such as launch, ready-for-publication, or published
 - `--increment-retry-count`: use when recording a failed worker attempt
 
-6. Use this worker brief template verbatim except for placeholder substitution:
+6. Use this worker brief template verbatim except for placeholder substitution. Paired with the two named worker references, this brief is intended to be self-sufficient; do not expect the worker to inspect script internals or infer missing path/schema rules elsewhere:
 
 ```text
 Own exactly one CFST paper.
@@ -156,9 +156,10 @@ Execution rules:
 - Do not revert unrelated changes.
 - Write exactly one JSON file on disk, at `temp_json_host_path`.
 - Do not create or modify a worktree-local relative `runs/...` JSON path.
+- Before final JSON assembly, build exactly one non-canonical scratch file at `output/tmp/<paper_id>/_scratch/extraction_draft.yaml`. Do not write a second JSON artifact on disk.
 - `temp_json_workspace_path` is the sandbox-visible path of that same file after `output_host_path` is bound into `output_dir`.
-- Read the paper using this sequence: `pdf_info` → `pdf_text` (text-layer index for page search) → optional `pdf_montage` (cross-page comparison only) → `pdf_pages(paths_only=true)` (render target pages) → `view_image` (inspect page images one at a time).
-- Use the text layer from `pdf_text` only for locating target pages by keyword search. Do not extract specimen values from the text layer.
+- Read the paper using this sequence: `pdf_info` → `pdf_text` (text-layer index for page search, usually with `include_pages=false`) → optional `pdf_montage` (cross-page comparison only) → `pdf_pages(paths_only=true)` (render target pages) → `view_image` (inspect page images one at a time).
+- Use the text layer from `pdf_text` only for locating target pages by keyword search. Prefer metadata plus `cache_path` when you only need navigation. Use `preview_pages` or `match_query` / `matched_pages_only=true` only when you intentionally want inline text pages.
 - Use `pdf_montage` only for navigation/comparison. Read specimen values only from single-page rendered images via `view_image`.
 - Read values directly from the rendered PDF page images via `view_image`. The page image is the single source of truth.
 - Run the validation command exactly as written below; do not rewrite paths or create a second output location.
@@ -275,15 +276,18 @@ python .codex/skills/cfst-paper-extractor/scripts/checkpoint_output_commits.py \
 
 - Process exactly one prepared paper PDF.
 - Worker-authoritative sources are the owned paper PDF, `references/extraction-rules.md`, `references/single-flow.md`, and the parent-supplied worker brief.
+- The parent-supplied worker brief plus those two worker references must be sufficient for execution. A worker should not need to inspect script source or any other repository files unless a documented command fails with a concrete runtime blocker.
 - Do not inspect `SKILL.md`, `scripts/`, `runs/`, prior outputs, or other papers to infer schema, validation, or path behavior. Only inspect a named helper script when a concrete runtime blocker remains unresolved after following the documented command.
 - When both `temp_json_workspace_path` and `temp_json_host_path` are provided, write the JSON on disk to `temp_json_host_path` and validate that same file through `temp_json_workspace_path` inside the sandbox bind mount.
 - Read the paper using `pdf_info` → `pdf_text` → optional `pdf_montage` → `pdf_pages(paths_only=true)` → `view_image`. Use text layer for page navigation only.
+- Prefer `pdf_text(include_pages=false)` for metadata-first navigation. Use `preview_pages` or `match_query` / `matched_pages_only=true` only when you intentionally need inline text pages, and rely on the returned `cache_path` for the MCP-managed on-disk text cache.
 - Use `pdf_montage` only for cross-page comparison and navigation. Do not read specimen values from montage images.
 - Read values directly from the rendered PDF page images via `view_image`. The PDF page image is the single source of truth for all specimen values.
 - Resolve `fc_basis` by following `references/extraction-rules.md` `## 8. Concrete-Strength Basis Rules`. Before interpreting symbols such as `fck`, `fc`, `f'c`, or `Fc`, first search nearby material/property text, table headers, and footnotes for code-defined grade notation such as Chinese `C30`, `C40`, `C50`, `C60` or Eurocode `C60/75`. In Chinese GB/T context, those `Cxx` grades sit above nearby bare `fck` / `fc` symbols in the priority order; when the reported measured value clearly matches the cube-strength system, keep `fc_type` consistent with that stored value instead of mirroring sloppy symbol usage. Do not assign `fc_basis` without consulting those rules.
 - Keep `fc_type` in validator-compatible form only: `cube`, `cylinder`, `prism`, `unknown`, or sized forms such as `Cube 150` or `Cylinder 100x200`. Never store symbolic notation like `fck/fcu/f'c/fc` or explanatory phrases in `fc_type`.
 - Exclude non-CFST controls such as hollow steel tube / bare steel tube / empty steel tube specimens before building `Group_A` / `Group_B` / `Group_C`.
 - When a repeated-specimen group reports only one average result row, expand it with the canonical `G-1 ... G-q` naming rule and record the average-result nature in both `source_evidence` and `evidence.value_origin.n_exp`.
+- Before final JSON assembly, build exactly one non-canonical scratch file at `output/tmp/<paper_id>/_scratch/extraction_draft.yaml`; do not write a second JSON artifact on disk.
 - Inside the worker sandbox, use `scripts/safe_calc.py` for conversions, rounding, and derived values; do not do ad hoc arithmetic.
 - Preserve eccentricity signs exactly as source evidence shows them.
 - Do not exclude ordinary CFST specimens from the dataset based on the sign pattern of `e1` and `e2` alone.
@@ -296,6 +300,7 @@ python .codex/skills/cfst-paper-extractor/scripts/checkpoint_output_commits.py \
 - Treat `is_valid=true` as usable; extract all specimens regardless of ordinary status.
 - Tag each specimen with `is_ordinary` and `ordinary_exclusion_reasons` using the two-tier evaluation in `references/extraction-rules.md` section 2.
 - Derive `is_ordinary_cfst` from specimen flags: `true` when at least one specimen has `is_ordinary=true`.
+- Optional specimen trace fields `reported_group_label` and `replicate_index` may be populated when one reported paper label expands into multiple specimen rows.
 - Keep worker output in `tmp/<paper_id>/<paper_id>.json` only.
 - Let the parent publish the final JSON into `output/<paper_id>.json`; workers must never write final outputs directly.
 - Treat published JSON as canonical. Any project-specific tabular conversion should happen outside this skill.
@@ -322,7 +327,7 @@ python .codex/skills/cfst-paper-extractor/scripts/bootstrap_git_repo.py \
 ## Use These Bundled Scripts
 
 - `scripts/prepare_batch.py`: preferred entry point; discover processed PDF files, verify readability, and write manifests/state for worker orchestration.
-- `scripts/validate_single_output.py`: sandbox-only validator for one worker-local schema-v2 JSON; checks shape, provenance, plausibility, ordinary-filter consistency, and rounding.
+- `scripts/validate_single_output.py`: sandbox-only validator for one worker-local schema-v2.1 JSON; checks shape, provenance, plausibility, ordinary-filter consistency, and rounding.
 - `scripts/publish_validated_output.py`: revalidate worker outputs, publish final JSON, append a publish log, optionally publish only selected `--paper-ids`, and update `batch_state.json` when `--batch-state` is provided.
 - `scripts/update_batch_state.py`: update one paper entry in `batch_state.json` from the parent orchestration flow.
 - `scripts/git_worktree_isolation.py`: create and remove per-paper git worktrees. In the parent flow, `create` also returns `output_host_path`, the persistent host directory that should be bound into `worker_sandbox.py`.

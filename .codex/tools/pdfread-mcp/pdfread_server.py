@@ -103,6 +103,15 @@ def _cache_dir_for(pdf_path: Path) -> Path:
     return CACHE_ROOT / digest
 
 
+def _read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _render_page(
     pdf_path: Path, page: int, dpi: int, fmt: str
 ) -> Path:
@@ -162,6 +171,28 @@ def _extract_text_by_page(pdf_path: Path) -> list[dict[str, Any]]:
             break  # trailing empty split after last form feed
         result.append({"page": i + 1, "text": stripped, "chars": len(stripped)})
     return result
+
+
+def _text_cache_path(pdf_path: Path) -> Path:
+    return _cache_dir_for(pdf_path) / "pdf_text.json"
+
+
+def _load_or_build_text_cache(pdf_path: Path) -> tuple[Path, dict[str, Any]]:
+    cache_path = _text_cache_path(pdf_path)
+    if cache_path.exists():
+        return cache_path, _read_json(cache_path)
+
+    total = _get_total_pages(pdf_path)
+    text_pages = _extract_text_by_page(pdf_path)
+    payload = {
+        "ok": True,
+        "path": str(pdf_path),
+        "total_pages": total,
+        "text_quality": _compute_text_quality(text_pages),
+        "pages": text_pages,
+    }
+    _write_json(cache_path, payload)
+    return cache_path, payload
 
 
 def _compute_text_quality(pages: list[dict[str, Any]]) -> float:
@@ -371,46 +402,114 @@ async def pdf_pages(
         openWorldHint=False,
     ),
 )
-async def pdf_text(path: str, max_pages: int = 80) -> str:
+async def pdf_text(
+    path: str,
+    max_pages: int = 80,
+    include_pages: bool = True,
+    preview_pages: int | None = None,
+    match_query: str | None = None,
+    matched_pages_only: bool = False,
+) -> str:
     """Extract the text layer from a PDF file, split by page number.
 
     Use this for keyword search and page navigation before calling
     pdf_pages or view_image on specific pages. The text layer is a
     navigation aid only — do not use it to extract specimen values.
 
+    The extracted text layer is cached on disk so long papers do not
+    need to be reprocessed on every call. The returned JSON includes
+    both the inline page text and the cache file path.
+
     Args:
         path: Absolute path to the PDF file.
         max_pages: Advisory page limit. When total pages exceed this
                    value, the result includes an exceeds_limit warning.
                    The text is still extracted. Defaults to 80.
+        include_pages: When True (default), inline page text in the
+                       response. Set False to return metadata plus
+                       `cache_path` only.
+        preview_pages: Optional number of leading pages to inline when
+                       `include_pages=True`.
+        match_query: Optional case-insensitive substring used to locate
+                     matching pages in the cached text layer.
+        matched_pages_only: When True, inline only the pages matching
+                            `match_query`. Requires `match_query` and
+                            `include_pages=True`.
 
     Returns:
         JSON object with:
         - path (str): resolved absolute path
         - total_pages (int): number of pages
         - text_quality (float): fraction of readable characters (0-1)
+        - cache_path (str): cached text-layer JSON file path
         - exceeds_limit (bool): true when total_pages > max_pages
         - warning (str|null): human-readable warning if exceeds_limit
-        - pages (list): [{page, text, chars}, ...]
+        - pages_mode (str): one of `all`, `preview`, `matched`, `none`
+        - returned_page_count (int): number of inline page entries
+        - matched_pages (list[int]): pages matching `match_query` when provided
+        - pages (list): [{page, text, chars}, ...] when `include_pages=True`
     """
-    pdf_path = _validate_pdf_path(path)
-    total = _get_total_pages(pdf_path)
-    text_pages = _extract_text_by_page(pdf_path)
-    quality = _compute_text_quality(text_pages)
-    exceeds = total > max_pages
+    if preview_pages is not None and preview_pages < 0:
+        raise ValueError(f"preview_pages must be >= 0, got {preview_pages}")
+    if preview_pages is not None and not include_pages:
+        raise ValueError("preview_pages requires include_pages=True")
+    if matched_pages_only and not include_pages:
+        raise ValueError("matched_pages_only requires include_pages=True")
+    if matched_pages_only and not match_query:
+        raise ValueError("matched_pages_only requires match_query")
+    if matched_pages_only and preview_pages is not None:
+        raise ValueError("preview_pages and matched_pages_only cannot be combined")
 
-    return json.dumps(
-        {
-            "ok": True,
-            "path": str(pdf_path),
-            "total_pages": total,
-            "text_quality": quality,
-            "exceeds_limit": exceeds,
-            "warning": f"PDF has {total} pages (limit {max_pages})" if exceeds else None,
-            "pages": text_pages,
-        },
-        ensure_ascii=False,
-    )
+    pdf_path = _validate_pdf_path(path)
+    cache_path, cached_payload = _load_or_build_text_cache(pdf_path)
+    total = int(cached_payload["total_pages"])
+    quality = float(cached_payload["text_quality"])
+    text_pages = cached_payload["pages"]
+    exceeds = total > max_pages
+    matched_pages: list[int] | None = None
+    if match_query:
+        query = match_query.casefold()
+        matched_pages = [
+            int(page["page"])
+            for page in text_pages
+            if query in str(page.get("text", "")).casefold()
+        ]
+
+    returned_pages: list[dict[str, Any]] | None = None
+    pages_mode = "none"
+    if include_pages:
+        if matched_pages_only:
+            matched_set = set(matched_pages or [])
+            returned_pages = [
+                page for page in text_pages if int(page["page"]) in matched_set
+            ]
+            pages_mode = "matched"
+        elif preview_pages is not None:
+            returned_pages = text_pages[:preview_pages]
+            pages_mode = "preview"
+        else:
+            returned_pages = text_pages
+            pages_mode = "all"
+
+    result = {
+        "ok": True,
+        "path": str(pdf_path),
+        "total_pages": total,
+        "text_quality": quality,
+        "cache_path": str(cache_path),
+        "exceeds_limit": exceeds,
+        "warning": f"PDF has {total} pages (limit {max_pages})" if exceeds else None,
+        "pages_mode": pages_mode,
+        "returned_page_count": len(returned_pages or []),
+    }
+    if match_query is not None:
+        result["match_query"] = match_query
+        result["matched_pages"] = matched_pages or []
+        result["matched_page_count"] = len(matched_pages or [])
+    if include_pages:
+        result["pages"] = returned_pages or []
+
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp.tool(
