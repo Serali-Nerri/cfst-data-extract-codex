@@ -2,3 +2,4 @@ __pycache__/
 output/
 pdfread_server.py
 processed/
+bak/
