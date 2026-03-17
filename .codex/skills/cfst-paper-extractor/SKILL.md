@@ -6,7 +6,7 @@ description: Extract specimen-level data from processed CFST paper PDFs into sch
 # CFST Paper Extractor
 
 Use only bundled files in this skill. Do not depend on external metadata manifests.
-The `processed/` directory contains PDF files matching `[Ax-yy]*.pdf`. Workers read these PDFs via the `pdf_text` (text-layer search), `pdf_pages` (image rendering), and `view_image` (page inspection) tools.
+The `processed/` directory contains PDF files matching `[Ax-yy]*.pdf`. Workers read these PDFs via the `pdf_text` (text-layer search), optional `pdf_montage` (cross-page comparison), `pdf_pages` (image rendering), and `view_image` (page inspection) tools.
 
 ## Use This Workflow
 
@@ -129,7 +129,7 @@ Inputs:
 - paper_id: <paper_id>
 - worktree_path: <worktree_path>
 - paper_pdf_relpath: <paper_pdf_relpath>        (relative path — used in sandbox commands: --paper-dir-relpath)
-- paper_pdf_path: <absolute_host_path_to_pdf>   (absolute path — used in pdf_info / pdf_text / pdf_pages MCP tool calls)
+- paper_pdf_path: <absolute_host_path_to_pdf>   (absolute path — used in pdf_info / pdf_text / pdf_montage / pdf_pages MCP tool calls)
 - output_dir: output/tmp/<paper_id>
 - output_host_path: <output_host_path>
 - temp_json_workspace_path: output/tmp/<paper_id>/<paper_id>.json
