@@ -173,8 +173,10 @@ Execution rules:
     -- \
     python3 .codex/skills/cfst-paper-extractor/scripts/validate_single_output.py \
       --json-path output/tmp/<paper_id>/<paper_id>.json \
+      --scratch-yaml-path output/tmp/<paper_id>/_scratch/extraction_draft.yaml \
       --strict-rounding
 - If validation fails, repair once before returning.
+- If you edit the JSON or scratch YAML after any validation attempt, rerun the same validator command before returning.
 - If the validator or sandbox reports a path, mount, or sandbox startup failure, stop and return that failure to the parent; do not move the JSON to a different path and do not write a second copy elsewhere.
 
 Return exactly:
@@ -287,8 +289,10 @@ python .codex/skills/cfst-paper-extractor/scripts/checkpoint_output_commits.py \
 - Keep `fc_type` in validator-compatible form only: `cube`, `cylinder`, `prism`, `unknown`, or sized forms such as `Cube 150` or `Cylinder 100x200`. Never store symbolic notation like `fck/fcu/f'c/fc` or explanatory phrases in `fc_type`.
 - Exclude non-CFST controls such as hollow steel tube / bare steel tube / empty steel tube specimens before building the kept CFST specimen universe.
 - Keep ordinary CFST rows in `Group_A` / `Group_B` / `Group_C`. Move non-ordinary CFST rows into top-level `excluded_specimens` bundles grouped by shared exclusion reason and locator evidence.
-- When a repeated-specimen group reports only one average result row, expand it with the canonical `G-1 ... G-q` naming rule and record the average-result nature in both `source_evidence` and `evidence.value_origin.n_exp`.
+- Keep `material_modifiers` present on every ordinary row even when it is `[]`. In published ordinary rows, `[]` is the explicit proof that the modifier scan was performed and no active modifier was found; do not omit the field as redundant.
+- When a repeated-specimen group reports only one average result row, expand it with the canonical `G-1 ... G-q` naming rule and record the average-result nature directly in `source_evidence`.
 - Before final JSON assembly, build exactly one non-canonical scratch file at `output/tmp/<paper_id>/_scratch/extraction_draft.yaml`; do not write a second JSON artifact on disk.
+- The scratch YAML `ordinary_decisions` section is authoritative. Build it before the JSON, keep the JSON consistent with it, and pass that same scratch path to the validator via `--scratch-yaml-path`.
 - Inside the worker sandbox, use `scripts/safe_calc.py` for conversions, rounding, and derived values; do not do ad hoc arithmetic.
 - Preserve eccentricity signs exactly as source evidence shows them.
 - Do not exclude ordinary CFST specimens from the dataset based on the sign pattern of `e1` and `e2` alone.
@@ -329,7 +333,7 @@ python .codex/skills/cfst-paper-extractor/scripts/bootstrap_git_repo.py \
 ## Use These Bundled Scripts
 
 - `scripts/prepare_batch.py`: preferred entry point; discover processed PDF files, verify readability, and write manifests/state for worker orchestration.
-- `scripts/validate_single_output.py`: sandbox-only validator for one worker-local schema-v2.2 JSON; checks shape, grouped excluded-specimen bundles, plausibility, ordinary-filter consistency, and rounding.
+- `scripts/validate_single_output.py`: sandbox-only validator for one worker-local schema-v2.2 JSON plus its authoritative scratch YAML; checks shape, grouped excluded-specimen bundles, scratch/JSON consistency, ordinary-filter consistency, locator wording, and rounding.
 - `scripts/publish_validated_output.py`: revalidate worker outputs, publish final JSON, append a publish log, optionally publish only selected `--paper-ids`, and update `batch_state.json` when `--batch-state` is provided.
 - `scripts/update_batch_state.py`: update one paper entry in `batch_state.json` from the parent orchestration flow.
 - `scripts/git_worktree_isolation.py`: create and remove per-paper git worktrees. In the parent flow, `create` also returns `output_host_path`, the persistent host directory that should be bound into `worker_sandbox.py`.

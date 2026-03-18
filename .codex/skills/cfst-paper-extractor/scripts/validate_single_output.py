@@ -15,6 +15,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover - exercised only in minimal Python envs
+    yaml = None
+
 
 def _assert_sandbox() -> None:
     if os.environ.get("CFST_SANDBOX") != "1":
@@ -142,6 +147,18 @@ FC_TYPE_SIZED_PATTERN = re.compile(
 )
 FC_TYPE_DISALLOWED_SYMBOL_PATTERN = re.compile(r"\b(f'?c|fc'|fcu|fck|fcm|fcd)\b", re.IGNORECASE)
 GROUP_AVERAGE_HINT_PATTERN = re.compile(r"(group\s*average|average|avg|mean|平均|均值)", re.IGNORECASE)
+PAGE_LOCATOR_PATTERN = re.compile(r"(?:\bpage\b|页)", re.IGNORECASE)
+SOURCE_LOCATOR_PATTERN = re.compile(
+    r"(?:\btable\b|\bfig\b|\bfigure\b|\btext\s+section\b|\btext\b|\bsection\b|表|图|正文|第?\s*[0-9一二三四五六七八九十]+(?:\.[0-9]+)*\s*节)",
+    re.IGNORECASE,
+)
+SCRATCH_DECISION_KEYS = {
+    "label",
+    "concrete_type",
+    "material_modifiers",
+    "is_ordinary",
+    "exclusion_reasons",
+}
 
 
 def _as_bool(value: str) -> bool:
@@ -214,6 +231,25 @@ def _validate_nonempty_string_list(
         errors.append(f"`{tag}` must not contain duplicates.")
     if require_sorted and normalized != sorted(normalized):
         errors.append(f"`{tag}` must be sorted in ascending order.")
+
+
+def _trimmed_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    trimmed: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            normalized = item.strip()
+            if normalized:
+                trimmed.append(normalized)
+    return trimmed
+
+
+def _warn_if_locator_missing(value: str, tag: str, warnings: list[str]) -> None:
+    if PAGE_LOCATOR_PATTERN.search(value) is None:
+        warnings.append(f"`{tag}` should include page localization.")
+    if SOURCE_LOCATOR_PATTERN.search(value) is None:
+        warnings.append(f"`{tag}` should include table/figure/text locator.")
 
 
 def _is_valid_fc_type(value: str) -> bool:
@@ -302,7 +338,25 @@ def _validate_ordinary_filter(
             errors.append("`ordinary_filter.ordinary_count` cannot exceed `total_count`.")
 
     if "special_factors" in obj:
-        _validate_string_list(obj["special_factors"], "ordinary_filter.special_factors", errors)
+        _validate_nonempty_string_list(
+            obj["special_factors"],
+            "ordinary_filter.special_factors",
+            errors,
+            require_unique=True,
+            require_sorted=True,
+        )
+        if isinstance(obj["special_factors"], list):
+            for idx, item in enumerate(obj["special_factors"]):
+                if (
+                    isinstance(item, str)
+                    and item.strip()
+                    and item not in ORDINARY_ALLOWED_SPECIAL_FACTORS
+                ):
+                    allowed = ", ".join(sorted(ORDINARY_ALLOWED_SPECIAL_FACTORS))
+                    errors.append(
+                        f"`ordinary_filter.special_factors[{idx}]` invalid: {item}. "
+                        f"Allowed values: {allowed}."
+                    )
     if "exclusion_reasons" in obj:
         _validate_string_list(obj["exclusion_reasons"], "ordinary_filter.exclusion_reasons", errors)
 
@@ -432,11 +486,7 @@ def _validate_excluded_bundle(idx: int, bundle: Any, errors: list[str], warnings
     if "source_evidence" in bundle:
         _validate_nonempty_line(bundle["source_evidence"], f"{tag}.source_evidence", errors)
         if isinstance(bundle["source_evidence"], str):
-            lowered = bundle["source_evidence"].lower()
-            if "page" not in lowered:
-                warnings.append(f"`{tag}.source_evidence` should include page localization.")
-            if all(token not in lowered for token in ("table", "fig", "figure", "text section")):
-                warnings.append(f"`{tag}.source_evidence` should include table/figure/text locator.")
+            _warn_if_locator_missing(bundle["source_evidence"], f"{tag}.source_evidence", warnings)
 
     if "reason_evidence" in bundle:
         _validate_reason_evidence(tag, bundle["reason_evidence"], errors)
@@ -590,11 +640,7 @@ def _validate_specimen(
     if "source_evidence" in specimen:
         _validate_nonempty_line(specimen["source_evidence"], f"{tag}.source_evidence", errors)
         if isinstance(specimen["source_evidence"], str):
-            lowered = specimen["source_evidence"].lower()
-            if "page" not in lowered:
-                warnings.append(f"`{tag}.source_evidence` should include page localization.")
-            if all(token not in lowered for token in ("table", "fig", "figure", "text section")):
-                warnings.append(f"`{tag}.source_evidence` should include table/figure/text locator.")
+            _warn_if_locator_missing(specimen["source_evidence"], f"{tag}.source_evidence", warnings)
 
     if "quality_flags" in specimen:
         _validate_string_list(specimen["quality_flags"], f"{tag}.quality_flags", errors)
@@ -676,6 +722,193 @@ def _count_excluded_members(payload: dict[str, Any]) -> int:
                 if isinstance(labels, list):
                     total += len(labels)
     return total
+
+
+def _payload_label_maps(
+    payload: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    ordinary_rows: dict[str, dict[str, Any]] = {}
+    excluded_rows: dict[str, dict[str, Any]] = {}
+
+    for _group_name, _idx, specimen in _iter_specimens(payload):
+        label = specimen.get("specimen_label")
+        if isinstance(label, str) and label.strip():
+            ordinary_rows[label.strip()] = specimen
+
+    bundles = payload.get("excluded_specimens", [])
+    if isinstance(bundles, list):
+        for bundle in bundles:
+            if not isinstance(bundle, dict):
+                continue
+            labels = bundle.get("specimen_labels")
+            if not isinstance(labels, list):
+                continue
+            for label in labels:
+                if isinstance(label, str) and label.strip():
+                    excluded_rows[label.strip()] = bundle
+
+    return ordinary_rows, excluded_rows
+
+
+def validate_payload_against_scratch(payload: Any, scratch_payload: Any) -> list[str]:
+    errors: list[str] = []
+
+    if not isinstance(payload, dict):
+        return ["Top-level JSON must be object."]
+    if not isinstance(scratch_payload, dict):
+        return ["Scratch YAML must decode to an object."]
+
+    decisions = scratch_payload.get("ordinary_decisions")
+    if not isinstance(decisions, list):
+        return ["`ordinary_decisions` is required in scratch YAML and must be a list."]
+
+    ordinary_rows, excluded_rows = _payload_label_maps(payload)
+    payload_labels = set(ordinary_rows) | set(excluded_rows)
+    scratch_labels: set[str] = set()
+    scratch_ordinary_count = 0
+    derived_special_factors: set[str] = set()
+
+    for idx, decision in enumerate(decisions):
+        tag = f"ordinary_decisions[{idx}]"
+        if not isinstance(decision, dict):
+            errors.append(f"`{tag}` must be an object.")
+            continue
+
+        missing = SCRATCH_DECISION_KEYS - set(decision.keys())
+        if missing:
+            errors.append(f"`{tag}` missing keys: {sorted(missing)}")
+
+        label = decision.get("label")
+        if not isinstance(label, str) or not label.strip():
+            errors.append(f"`{tag}.label` must be a non-empty string.")
+            continue
+        label = label.strip()
+        if label in scratch_labels:
+            errors.append(f"`ordinary_decisions` duplicated label: {label}")
+            continue
+        scratch_labels.add(label)
+
+        concrete_type = decision.get("concrete_type")
+        if not isinstance(concrete_type, str):
+            errors.append(f"`{tag}.concrete_type` must be string.")
+            continue
+        if concrete_type not in CONCRETE_TYPES:
+            errors.append(f"`{tag}.concrete_type` invalid: {concrete_type}")
+            continue
+        if concrete_type == "high_strength":
+            derived_special_factors.add("high_strength_concrete")
+        if concrete_type == "recycled":
+            derived_special_factors.add("recycled_aggregate")
+
+        if "material_modifiers" in decision:
+            _validate_nonempty_string_list(
+                decision["material_modifiers"],
+                f"{tag}.material_modifiers",
+                errors,
+                require_unique=True,
+            )
+        scratch_modifiers = _trimmed_string_list(decision.get("material_modifiers"))
+
+        is_ordinary = decision.get("is_ordinary")
+        if not isinstance(is_ordinary, bool):
+            errors.append(f"`{tag}.is_ordinary` must be boolean.")
+            continue
+
+        if "exclusion_reasons" in decision:
+            _validate_nonempty_string_list(
+                decision["exclusion_reasons"],
+                f"{tag}.exclusion_reasons",
+                errors,
+                require_unique=True,
+            )
+        scratch_reasons = _trimmed_string_list(decision.get("exclusion_reasons"))
+
+        if is_ordinary:
+            scratch_ordinary_count += 1
+            if scratch_reasons:
+                errors.append(f"`{tag}.exclusion_reasons` must be empty when `is_ordinary=true`.")
+            bad_modifiers = [item for item in scratch_modifiers if item in NON_ORDINARY_MATERIAL_MODIFIERS]
+            if bad_modifiers:
+                errors.append(
+                    f"`{tag}.is_ordinary=true` but material_modifiers contains non-ordinary factors: {bad_modifiers}."
+                )
+            specimen = ordinary_rows.get(label)
+            if specimen is None:
+                errors.append(
+                    f"`{tag}` is ordinary in scratch YAML but `{label}` is not present in `Group_A`/`Group_B`/`Group_C`."
+                )
+                continue
+            if specimen.get("concrete_type") != concrete_type:
+                errors.append(
+                    f"`{tag}.concrete_type` is {concrete_type} but JSON row `{label}` stores {specimen.get('concrete_type')}."
+                )
+            if _trimmed_string_list(specimen.get("material_modifiers")) != scratch_modifiers:
+                errors.append(
+                    f"`{tag}.material_modifiers` does not match JSON row `{label}`."
+                )
+            if specimen.get("is_ordinary") is not True:
+                errors.append(f"JSON row `{label}` must have `is_ordinary=true` to match `{tag}`.")
+            if _trimmed_string_list(specimen.get("ordinary_exclusion_reasons")):
+                errors.append(
+                    f"JSON row `{label}` must have empty `ordinary_exclusion_reasons` to match `{tag}`."
+                )
+        else:
+            if not scratch_reasons:
+                errors.append(f"`{tag}.exclusion_reasons` must be non-empty when `is_ordinary=false`.")
+            bundle = excluded_rows.get(label)
+            if bundle is None:
+                errors.append(
+                    f"`{tag}` is excluded in scratch YAML but `{label}` is not represented in `excluded_specimens`."
+                )
+                continue
+            bundle_reasons = _trimmed_string_list(bundle.get("ordinary_exclusion_reasons"))
+            if bundle_reasons != scratch_reasons:
+                errors.append(
+                    f"`{tag}.exclusion_reasons` does not match the bundle reasons for `{label}`."
+                )
+
+    missing_in_json = sorted(scratch_labels - payload_labels)
+    if missing_in_json:
+        errors.append(
+            "Scratch YAML labels are not fully represented in JSON: "
+            + ", ".join(missing_in_json)
+        )
+
+    missing_in_scratch = sorted(payload_labels - scratch_labels)
+    if missing_in_scratch:
+        errors.append(
+            "JSON labels are missing from `ordinary_decisions`: "
+            + ", ".join(missing_in_scratch)
+        )
+
+    ordinary_filter = payload.get("ordinary_filter")
+    if isinstance(ordinary_filter, dict):
+        ordinary_count = ordinary_filter.get("ordinary_count")
+        total_count = ordinary_filter.get("total_count")
+        if isinstance(ordinary_count, int) and ordinary_count != scratch_ordinary_count:
+            errors.append(
+                f"`ordinary_filter.ordinary_count` is {ordinary_count} but scratch YAML records {scratch_ordinary_count} ordinary decisions."
+            )
+        if isinstance(total_count, int) and total_count != len(scratch_labels):
+            errors.append(
+                f"`ordinary_filter.total_count` is {total_count} but scratch YAML records {len(scratch_labels)} kept CFST specimens."
+            )
+        scratch_special_factors = sorted(derived_special_factors)
+        if _trimmed_string_list(ordinary_filter.get("special_factors")) != scratch_special_factors:
+            errors.append(
+                "`ordinary_filter.special_factors` must equal the sorted paper-level tags derived "
+                f"from scratch YAML ordinary decisions: {scratch_special_factors}."
+            )
+
+    paper_level = payload.get("paper_level")
+    if isinstance(paper_level, dict):
+        expected_specimen_count = paper_level.get("expected_specimen_count")
+        if isinstance(expected_specimen_count, int) and expected_specimen_count != len(scratch_labels):
+            errors.append(
+                f"`paper_level.expected_specimen_count` is {expected_specimen_count} but scratch YAML records {len(scratch_labels)} kept CFST specimens."
+            )
+
+    return errors
 
 
 def _validate_specimen_ordinary(
@@ -893,6 +1126,11 @@ def main() -> int:
     )
     parser.add_argument("--json-path", required=True, help="Path to extraction JSON file.")
     parser.add_argument(
+        "--scratch-yaml-path",
+        required=True,
+        help="Path to the authoritative extraction_draft.yaml used to build the JSON.",
+    )
+    parser.add_argument(
         "--expect-valid",
         default=None,
         type=_as_bool,
@@ -915,11 +1153,24 @@ def main() -> int:
     if not json_path.exists():
         print(f"[FAIL] JSON file not found: {json_path}")
         return 1
+    scratch_yaml_path = Path(args.scratch_yaml_path)
+    if not scratch_yaml_path.exists():
+        print(f"[FAIL] Scratch YAML file not found: {scratch_yaml_path}")
+        return 1
+    if yaml is None:
+        print("[FAIL] PyYAML is required to validate scratch YAML consistency.")
+        return 1
 
     try:
         payload = json.loads(json_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         print(f"[FAIL] Invalid JSON: {exc}")
+        return 1
+
+    try:
+        scratch_payload = yaml.safe_load(scratch_yaml_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        print(f"[FAIL] Invalid scratch YAML: {exc}")
         return 1
 
     errors, warnings, total = validate_payload(
@@ -928,6 +1179,7 @@ def main() -> int:
         args.strict_rounding,
         args.expect_count,
     )
+    errors.extend(validate_payload_against_scratch(payload, scratch_payload))
 
     print(f"[INFO] Kept CFST specimen count: {total}")
     if warnings:

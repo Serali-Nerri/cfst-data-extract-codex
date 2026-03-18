@@ -63,6 +63,8 @@ If Tier 1 fails, skip Tier 2 and treat the full kept CFST specimen universe as n
 - `concrete_type` records only the base concrete family: `normal`, `high_strength`, `recycled`, `lightweight`, `self_consolidating`, `uhpc`, `other`, `unknown`.
 - `material_modifiers` records additional concrete modifications, admixture-driven functions, or non-ordinary material systems as a list of strings (empty list `[]` for plain concrete).
 
+In the final published JSON, keep `material_modifiers` on ordinary specimen rows even when it is `[]`. That empty list is intentional evidence that the modifier scan was performed and no active modifier was found for that row.
+
 Examples:
 - High-strength expansive concrete: `concrete_type=high_strength` + `material_modifiers=["expansive_concrete"]`
 - Recycled rubber concrete: `concrete_type=recycled` + `material_modifiers=["rubber_concrete"]`
@@ -169,7 +171,10 @@ After the kept CFST specimen universe is tagged and split into ordinary rows plu
 - `ordinary_filter.include_in_dataset = is_ordinary_cfst`
 - `ordinary_filter.ordinary_count` = count of ordinary rows written into `Group_A` / `Group_B` / `Group_C`
 - `ordinary_filter.total_count` = total kept CFST specimen count = ordinary group rows + represented member count across `excluded_specimens[*].specimen_labels`
-- `ordinary_filter.special_factors`: list of paper-level special tags
+- `ordinary_filter.special_factors`: sorted unique paper-level base-concrete tags derived from the kept CFST specimen universe. Allowed values only:
+  - `high_strength_concrete`
+  - `recycled_aggregate`
+  Do not store specimen-level modifiers such as `expansive_concrete` here; those belong in `material_modifiers` and exclusion evidence.
 - `ordinary_filter.exclusion_reasons`: list of paper-level exclusion summaries
 
 ## 3. Top-Level JSON Shape
@@ -299,7 +304,7 @@ Required keys:
 - `include_in_dataset`: boolean (true when at least one specimen is ordinary)
 - `ordinary_count`: integer (count of specimens with `is_ordinary=true`)
 - `total_count`: integer (total kept CFST specimen count = ordinary group rows + represented excluded bundle members)
-- `special_factors`: list of strings
+- `special_factors`: sorted unique list drawn only from `high_strength_concrete` and `recycled_aggregate`
 - `exclusion_reasons`: list of strings
 
 ### 5.2 `ref_info`
@@ -421,6 +426,8 @@ Every bundle in top-level `excluded_specimens` must contain:
 
 `source_evidence` must be a concise single-line explanation of why the bundle's members are non-ordinary, including page localization plus a table / figure / text locator.
 
+Accepted page and locator wording may be English or Chinese, for example `Page 3 Table 4`, `Page 2 materials text`, `第3页表4`, `第2页正文`, or `Section 2.3 text`.
+
 `reason_evidence` must contain:
 
 - `page`
@@ -494,6 +501,7 @@ Every bundle in top-level `excluded_specimens` must contain:
 - `other_modified_concrete`
 
 Use an empty list `[]` for unmodified plain concrete. Never use `null`.
+For ordinary specimen rows, keep the field present with `[]` rather than omitting it; the empty list is the explicit checked-empty outcome of the modifier scan.
 
 ### 6.3 Ordinary Row Field Semantics
 
@@ -632,6 +640,8 @@ Each ordinary specimen row requires a concise `source_evidence` string. No `evid
 - identify the PDF page(s) and table/figure/text locator(s) for each stored value
 - state explicitly when `n_exp` is a reported group average rather than an individually measured value
 - explain derivations or notation resolutions inline (e.g., unit conversion, `r0 = D/2`, `fck` notation resolved to cube basis)
+
+Accepted page/locator wording may be English or Chinese. `Page`, `页`, `Table`, `Fig.`, `Figure`, `text`, `section`, `表`, `图`, `正文`, and explicit section forms such as `第2.3节` are all valid locator styles.
 
 Example:
 

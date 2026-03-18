@@ -129,9 +129,12 @@ If the PDF file does not exist at the given path or cannot be read by the MCP to
    - ordinary rows written in `Group_A` / `Group_B` / `Group_C`
    - grouped non-ordinary bundles written in top-level `excluded_specimens`
 22. Derive paper-level `is_ordinary_cfst` and `ordinary_filter` summary from the split output.
+    - `ordinary_filter.special_factors` must be the sorted unique paper-level base-concrete tags derived from `ordinary_decisions`.
+    - Allowed values only: `high_strength_concrete`, `recycled_aggregate`.
+    - Do not copy specimen-level modifiers such as `expansive_concrete` into `special_factors`.
 23. Build schema-v2.2 JSON from `output/tmp/<paper_id>/_scratch/extraction_draft.yaml` plus the final page-image evidence.
 24. Write that JSON on disk to `temp_json_host_path` from the worker brief. Do not create a worktree-local relative `runs/...` JSON path.
-25. Validate that same file through `temp_json_workspace_path` with the parent-provided `worker_sandbox.py` command.
+25. Validate that same file through `temp_json_workspace_path` with the parent-provided `worker_sandbox.py` command, and pass `--scratch-yaml-path output/tmp/<paper_id>/_scratch/extraction_draft.yaml`.
 26. If validation fails for schema, data, or evidence reasons, repair once, overwrite the same host-backed JSON path, and validate once more.
 27. If validation fails for path, mount, sandbox startup, or ownership reasons, stop and report the failure; do not relocate the JSON and do not create a second copy elsewhere.
 
@@ -175,6 +178,8 @@ Check once for the whole paper. If any fails, treat the entire kept CFST specime
 - `concrete_type`: base family only — `normal`, `high_strength`, `recycled`, `lightweight`, `self_consolidating`, `uhpc`, `other`, `unknown`.
 - `material_modifiers`: list of modification tags — `expansive_concrete`, `rubber_concrete`, `self_stressing_concrete`, `reactive_powder`, `fiber_reinforced`, `polymer_modified`, `geopolymer`, `foamed_concrete`, `other_modified_concrete`, etc. Use `[]` for plain concrete.
 
+For published ordinary rows, keep `material_modifiers` present even when it is `[]`. That empty list is the explicit checked-empty record that the row was scanned for modifiers and none were active.
+
 Concrete classification priority:
 
 1. Determine the base class (`normal` / `high_strength` / `recycled` / etc.).
@@ -203,6 +208,8 @@ Tag each kept CFST specimen:
 - `is_ordinary = true` with `ordinary_exclusion_reasons = []` when all conditions pass
 - `is_ordinary = false` with non-empty `ordinary_exclusion_reasons` listing each failing condition
 
+When a specimen remains ordinary and is written into `Group_A` / `Group_B` / `Group_C`, do not drop `material_modifiers` just because it is empty. Keep `material_modifiers=[]` as the explicit proof of a completed modifier check.
+
 ### Paper-Level Derivation
 
 After the kept CFST specimen universe is tagged and split, derive paper-level fields:
@@ -211,7 +218,7 @@ After the kept CFST specimen universe is tagged and split, derive paper-level fi
 - `ordinary_filter.include_in_dataset` = `is_ordinary_cfst`
 - `ordinary_filter.ordinary_count` = count of ordinary rows kept in `Group_A` / `Group_B` / `Group_C`
 - `ordinary_filter.total_count` = total kept CFST specimen count = ordinary group rows + represented excluded bundle members
-- `ordinary_filter.special_factors`: paper-level special tags
+- `ordinary_filter.special_factors`: sorted unique paper-level base-concrete tags derived from `ordinary_decisions`; allowed values only `high_strength_concrete` and `recycled_aggregate`
 - `ordinary_filter.exclusion_reasons`: paper-level exclusion summaries
 
 ## 6. Setup Figure Resolution
@@ -361,6 +368,8 @@ Every ordinary specimen row must contain a concise `source_evidence` string. No 
 - state explicitly when `n_exp` is a reported group average rather than an individually measured value
 - explain derivations or notation resolutions inline (e.g., unit conversion, `r0 = D/2`, `fck` notation resolved to cube basis)
 
+Accepted page/locator wording may be English or Chinese. `Page`, `页`, `Table`, `Fig.`, `Figure`, `text`, `section`, `表`, `图`, `正文`, and explicit section forms such as `第2.3节` are all valid locator styles.
+
 When page localization cannot be determined, state the best available locator rather than inventing a page number.
 
 When a value is derived or the basis is inferred from code/notation context (e.g., GB/T 50010 `C60` grade resolving `fc_basis = cube`), explain it inline in `source_evidence`.
@@ -383,6 +392,8 @@ Every `excluded_specimens` bundle must preserve:
 
 `reason_evidence.raw_texts` must be a non-empty list of unique source strings that justify the exclusion.
 
+Bundle `source_evidence` uses the same accepted English/Chinese page and locator wording as ordinary specimen rows.
+
 For `fc_basis` decisions inferred from code/notation context, name that context explicitly in `source_evidence` and mark `quality_flags += ["context_inferred_fc_basis"]`.
 
 ## 11. Validation Expectations
@@ -393,6 +404,7 @@ Validation outcomes fall into two classes:
 - path/mount/sandbox failures such as missing JSON at the declared path: report the failure to the parent and stop; do not move the JSON or invent a second output path
 
 Warnings alone are not validator failure. If the validator exits zero with warnings only, the worker may return success unless a warning reflects a clearly recoverable omission that it is already correcting during an error-driven repair pass.
+If the worker edits the JSON or scratch YAML after any validation attempt, it must rerun the same validator command before returning, even when the earlier run exited zero with warnings only.
 
 Validation must reject:
 
@@ -400,6 +412,7 @@ Validation must reject:
 - invalid `fc_basis`
 - impossible dimensions or strengths
 - `is_valid=false` with non-empty specimen groups or non-empty `excluded_specimens`
+- unknown `ordinary_filter.special_factors` or unsorted/duplicated `special_factors`
 - axial rows with nonzero eccentricity
 - eccentric rows with both eccentricities zero
 - non-null `fcy150` values that are non-numeric or non-positive
@@ -411,6 +424,7 @@ Validation must reject:
 - any row kept in `Group_A` / `Group_B` / `Group_C` with `is_ordinary=false`
 - any excluded bundle with empty `ordinary_exclusion_reasons`
 - any excluded bundle with missing `specimen_labels`, `source_evidence`, or `reason_evidence`
+- missing `ordinary_decisions` in scratch YAML, or any scratch/JSON mismatch in labels, ordinary verdicts, `material_modifiers`, exclusion reasons, or kept-specimen counts
 - `is_ordinary_cfst=true` but no specimen has `is_ordinary=true`
 - `is_ordinary_cfst=false` but some specimen has `is_ordinary=true`
 - `ordinary_filter.ordinary_count` mismatch with actual count of ordinary rows
