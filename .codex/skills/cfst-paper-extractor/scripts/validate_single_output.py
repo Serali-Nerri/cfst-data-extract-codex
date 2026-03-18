@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate one CFST extraction JSON against schema-v2.1 rules.
+"""Validate one CFST extraction JSON against schema-v2.2 rules.
 
 This strict skill variant requires the validator to run inside worker_sandbox.py.
 """
@@ -22,6 +22,7 @@ def _assert_sandbox() -> None:
         raise SystemExit(1)
 
 EPS = 1e-3
+SCHEMA_VERSION = "cfst-paper-extractor-v2.2"
 
 TOP_LEVEL_KEYS = {
     "schema_version",
@@ -35,6 +36,24 @@ TOP_LEVEL_KEYS = {
     "Group_A",
     "Group_B",
     "Group_C",
+    "excluded_specimens",
+}
+
+EXCLUDED_BUNDLE_KEYS = {
+    "ordinary_exclusion_reasons",
+    "specimen_labels",
+    "source_evidence",
+    "reason_evidence",
+}
+
+REASON_EVIDENCE_KEYS = {
+    "page",
+    "table_id",
+    "figure_id",
+    "table_image",
+    "setup_image",
+    "source",
+    "raw_texts",
 }
 
 SPECIMEN_KEYS = {
@@ -63,8 +82,7 @@ SPECIMEN_KEYS = {
     "e2",
     "n_exp",
     "source_evidence",
-    "evidence",
-    "quality_flags",
+    "material_modifiers",
 }
 
 NUMERIC_FIELDS = {"fc_value", "fy", "r_ratio", "b", "h", "t", "r0", "L", "e1", "e2", "n_exp"}
@@ -96,8 +114,6 @@ CONCRETE_TYPES = {
     "other",
     "unknown",
 }
-VALUE_ORIGIN_KINDS = {"direct", "derived", "normalized", "recovered_from_image", "unknown"}
-
 GROUP_TO_SHAPES = {
     "Group_A": {"square", "rectangular"},
     "Group_B": {"circular"},
@@ -106,6 +122,18 @@ GROUP_TO_SHAPES = {
 ORDINARY_ALLOWED_SHAPES = {"square", "rectangular", "circular", "round-ended"}
 ORDINARY_ALLOWED_CONCRETE_TYPES = {"normal", "high_strength", "recycled"}
 ORDINARY_ALLOWED_SPECIAL_FACTORS = {"high_strength_concrete", "recycled_aggregate"}
+
+NON_ORDINARY_MATERIAL_MODIFIERS = {
+    "expansive_concrete",
+    "rubber_concrete",
+    "self_stressing_concrete",
+    "reactive_powder",
+    "fiber_reinforced",
+    "polymer_modified",
+    "geopolymer",
+    "foamed_concrete",
+    "other_modified_concrete",
+}
 
 FC_TYPE_ALLOWED_SHAPE_ONLY = {"cube", "cylinder", "prism", "unknown"}
 FC_TYPE_SIZED_PATTERN = re.compile(
@@ -160,6 +188,32 @@ def _validate_nonempty_line(value: Any, tag: str, errors: list[str]) -> None:
         errors.append(f"`{tag}` must be single-line.")
     if _has_control_chars(value):
         errors.append(f"`{tag}` must not contain control characters.")
+
+
+def _validate_nonempty_string_list(
+    value: Any,
+    tag: str,
+    errors: list[str],
+    *,
+    require_unique: bool = False,
+    require_sorted: bool = False,
+) -> None:
+    if not isinstance(value, list):
+        errors.append(f"`{tag}` must be list.")
+        return
+    normalized: list[str] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, str):
+            errors.append(f"`{tag}[{idx}]` must be string.")
+            continue
+        if not item.strip():
+            errors.append(f"`{tag}[{idx}]` must be non-empty.")
+            continue
+        normalized.append(item)
+    if require_unique and len(set(normalized)) != len(normalized):
+        errors.append(f"`{tag}` must not contain duplicates.")
+    if require_sorted and normalized != sorted(normalized):
+        errors.append(f"`{tag}` must be sorted in ascending order.")
 
 
 def _is_valid_fc_type(value: str) -> bool:
@@ -319,42 +373,73 @@ def _validate_paper_level(obj: Any, errors: list[str]) -> None:
         _validate_setup_figure(obj["setup_figure"], errors)
 
 
-def _validate_value_origin(field_tag: str, value: Any, errors: list[str]) -> None:
-    if not isinstance(value, dict):
-        errors.append(f"`{field_tag}` must be an object.")
-        return
-    for key in ("kind", "raw_text", "raw_unit", "formula", "source"):
-        if key not in value:
-            errors.append(f"`{field_tag}.{key}` is required.")
-    kind = value.get("kind")
-    if kind is not None and kind not in VALUE_ORIGIN_KINDS:
-        errors.append(f"`{field_tag}.kind` invalid: {kind}")
-    for key in ("raw_text", "raw_unit", "formula", "source"):
-        if key in value and value[key] is not None and not isinstance(value[key], str):
-            errors.append(f"`{field_tag}.{key}` must be string or null.")
-
-
-def _validate_evidence(tag: str, evidence: Any, errors: list[str]) -> None:
+def _validate_reason_evidence(tag: str, evidence: Any, errors: list[str]) -> None:
     if not isinstance(evidence, dict):
-        errors.append(f"`{tag}.evidence` must be an object.")
+        errors.append(f"`{tag}.reason_evidence` must be an object.")
         return
-    for key in ("page", "table_id", "figure_id", "table_image", "setup_image", "value_origin"):
-        if key not in evidence:
-            errors.append(f"`{tag}.evidence.{key}` is required.")
+    missing = REASON_EVIDENCE_KEYS - set(evidence.keys())
+    if missing:
+        errors.append(f"`{tag}.reason_evidence` missing keys: {sorted(missing)}")
     if "page" in evidence and evidence["page"] is not None and not isinstance(evidence["page"], int):
-        errors.append(f"`{tag}.evidence.page` must be integer or null.")
+        errors.append(f"`{tag}.reason_evidence.page` must be integer or null.")
     for key in ("table_id", "figure_id", "table_image", "setup_image"):
         if key in evidence and evidence[key] is not None and not isinstance(evidence[key], str):
-            errors.append(f"`{tag}.evidence.{key}` must be string or null.")
-    value_origin = evidence.get("value_origin")
-    if not isinstance(value_origin, dict):
-        errors.append(f"`{tag}.evidence.value_origin` must be an object.")
+            errors.append(f"`{tag}.reason_evidence.{key}` must be string or null.")
+    if "source" in evidence:
+        _validate_nonempty_line(evidence["source"], f"{tag}.reason_evidence.source", errors)
+    if "raw_texts" in evidence:
+        _validate_nonempty_string_list(
+            evidence["raw_texts"],
+            f"{tag}.reason_evidence.raw_texts",
+            errors,
+            require_unique=True,
+        )
+        if isinstance(evidence["raw_texts"], list) and len(evidence["raw_texts"]) == 0:
+            errors.append(f"`{tag}.reason_evidence.raw_texts` must be non-empty.")
+
+
+def _validate_excluded_bundle(idx: int, bundle: Any, errors: list[str], warnings: list[str]) -> None:
+    tag = f"excluded_specimens[{idx}]"
+    if not isinstance(bundle, dict):
+        errors.append(f"`{tag}` must be object.")
         return
-    for field_name, item in value_origin.items():
-        if not isinstance(field_name, str):
-            errors.append(f"`{tag}.evidence.value_origin` keys must be strings.")
-            continue
-        _validate_value_origin(f"{tag}.evidence.value_origin.{field_name}", item, errors)
+
+    missing = EXCLUDED_BUNDLE_KEYS - set(bundle.keys())
+    if missing:
+        errors.append(f"`{tag}` missing keys: {sorted(missing)}")
+
+    if "ordinary_exclusion_reasons" in bundle:
+        _validate_nonempty_string_list(
+            bundle["ordinary_exclusion_reasons"],
+            f"{tag}.ordinary_exclusion_reasons",
+            errors,
+            require_unique=True,
+        )
+        if isinstance(bundle["ordinary_exclusion_reasons"], list) and len(bundle["ordinary_exclusion_reasons"]) == 0:
+            errors.append(f"`{tag}.ordinary_exclusion_reasons` must be non-empty.")
+
+    if "specimen_labels" in bundle:
+        _validate_nonempty_string_list(
+            bundle["specimen_labels"],
+            f"{tag}.specimen_labels",
+            errors,
+            require_unique=True,
+            require_sorted=True,
+        )
+        if isinstance(bundle["specimen_labels"], list) and len(bundle["specimen_labels"]) == 0:
+            errors.append(f"`{tag}.specimen_labels` must be non-empty.")
+
+    if "source_evidence" in bundle:
+        _validate_nonempty_line(bundle["source_evidence"], f"{tag}.source_evidence", errors)
+        if isinstance(bundle["source_evidence"], str):
+            lowered = bundle["source_evidence"].lower()
+            if "page" not in lowered:
+                warnings.append(f"`{tag}.source_evidence` should include page localization.")
+            if all(token not in lowered for token in ("table", "fig", "figure", "text section")):
+                warnings.append(f"`{tag}.source_evidence` should include table/figure/text locator.")
+
+    if "reason_evidence" in bundle:
+        _validate_reason_evidence(tag, bundle["reason_evidence"], errors)
 
 
 def _validate_specimen(
@@ -455,6 +540,11 @@ def _validate_specimen(
             errors.append(f"`{tag}.is_ordinary=true` must have empty `ordinary_exclusion_reasons`.")
         if is_ord is False and isinstance(reasons, list) and len(reasons) == 0:
             errors.append(f"`{tag}.is_ordinary=false` must have non-empty `ordinary_exclusion_reasons`.")
+        if is_ord is False:
+            errors.append(
+                f"`{tag}.is_ordinary=false` rows must not remain in {group_name}; "
+                "move them into `excluded_specimens`."
+            )
 
     if "fc_type" in specimen:
         if not isinstance(specimen["fc_type"], str):
@@ -509,8 +599,8 @@ def _validate_specimen(
     if "quality_flags" in specimen:
         _validate_string_list(specimen["quality_flags"], f"{tag}.quality_flags", errors)
 
-    if "evidence" in specimen:
-        _validate_evidence(tag, specimen["evidence"], errors)
+    if "material_modifiers" in specimen:
+        _validate_string_list(specimen["material_modifiers"], f"{tag}.material_modifiers", errors)
 
     flags = specimen.get("quality_flags") if isinstance(specimen.get("quality_flags"), list) else []
     if "group_average_n_exp" in flags:
@@ -519,23 +609,6 @@ def _validate_specimen(
             warnings.append(
                 f"`{tag}.source_evidence` should state that `n_exp` is a reported group average."
             )
-
-        evidence = specimen.get("evidence")
-        value_origin = evidence.get("value_origin") if isinstance(evidence, dict) else None
-        n_exp_origin = value_origin.get("n_exp") if isinstance(value_origin, dict) else None
-        if not isinstance(n_exp_origin, dict):
-            warnings.append(
-                f"`{tag}` is flagged `group_average_n_exp` and should include "
-                "`evidence.value_origin.n_exp`."
-            )
-        else:
-            origin_text = " ".join(
-                str(n_exp_origin.get(key) or "") for key in ("raw_text", "formula", "source")
-            )
-            if GROUP_AVERAGE_HINT_PATTERN.search(origin_text) is None:
-                warnings.append(
-                    f"`{tag}.evidence.value_origin.n_exp` should explain that the stored value is a group average."
-                )
 
     for key in ("fc_value", "fy", "b", "h", "t", "L", "n_exp"):
         if key in specimen and _is_number(specimen[key]) and specimen[key] <= 0:
@@ -593,6 +666,18 @@ def _iter_specimens(payload: dict[str, Any]):
                     yield group_name, idx, specimen
 
 
+def _count_excluded_members(payload: dict[str, Any]) -> int:
+    total = 0
+    bundles = payload.get("excluded_specimens", [])
+    if isinstance(bundles, list):
+        for bundle in bundles:
+            if isinstance(bundle, dict):
+                labels = bundle.get("specimen_labels")
+                if isinstance(labels, list):
+                    total += len(labels)
+    return total
+
+
 def _validate_specimen_ordinary(
     tag: str, specimen: dict[str, Any], tier1_pass: bool, errors: list[str], warnings: list[str]
 ) -> None:
@@ -621,6 +706,13 @@ def _validate_specimen_ordinary(
         if concrete_type == "recycled":
             if not _is_number(r_ratio) or (isinstance(r_ratio, (int, float)) and r_ratio <= 0):
                 errors.append(f"`{tag}.is_ordinary=true` recycled concrete must have r_ratio > 0.")
+        modifiers = specimen.get("material_modifiers", [])
+        if isinstance(modifiers, list):
+            bad = [m for m in modifiers if m in NON_ORDINARY_MATERIAL_MODIFIERS]
+            if bad:
+                errors.append(
+                    f"`{tag}.is_ordinary=true` but material_modifiers contains non-ordinary factors: {bad}."
+                )
 
     r_ratio = specimen.get("r_ratio")
     concrete_type = specimen.get("concrete_type")
@@ -646,13 +738,14 @@ def _validate_ordinary_scope(payload: dict[str, Any], errors: list[str], warning
 
     # Per-specimen ordinary checks
     actual_ordinary_count = 0
-    total_count = 0
+    ordinary_group_count = 0
     for group_name, idx, specimen in _iter_specimens(payload):
         tag = f"{group_name}[{idx}]"
-        total_count += 1
+        ordinary_group_count += 1
         _validate_specimen_ordinary(tag, specimen, tier1_pass, errors, warnings)
         if specimen.get("is_ordinary") is True:
             actual_ordinary_count += 1
+    total_count = ordinary_group_count + _count_excluded_members(payload)
 
     # Cross-check is_ordinary_cfst against specimen flags
     has_ordinary = actual_ordinary_count > 0
@@ -696,8 +789,13 @@ def validate_payload(
     if missing_top:
         errors.append(f"Missing top-level keys: {sorted(missing_top)}")
 
-    if "schema_version" in payload and not isinstance(payload["schema_version"], str):
-        errors.append("`schema_version` must be string.")
+    if "schema_version" in payload:
+        if not isinstance(payload["schema_version"], str):
+            errors.append("`schema_version` must be string.")
+        elif payload["schema_version"] != SCHEMA_VERSION:
+            errors.append(
+                f"`schema_version` must be `{SCHEMA_VERSION}`, got `{payload['schema_version']}`."
+            )
     if "paper_id" in payload:
         if not isinstance(payload["paper_id"], str):
             errors.append("`paper_id` must be string.")
@@ -714,6 +812,8 @@ def validate_payload(
     for group_name in ("Group_A", "Group_B", "Group_C"):
         if group_name in payload and not isinstance(payload[group_name], list):
             errors.append(f"`{group_name}` must be list.")
+    if "excluded_specimens" in payload and not isinstance(payload["excluded_specimens"], list):
+        errors.append("`excluded_specimens` must be list.")
 
     if "ordinary_filter" in payload:
         _validate_ordinary_filter(
@@ -744,6 +844,19 @@ def validate_payload(
                     if label:
                         label_index[label].append(tag)
 
+    bundles = payload.get("excluded_specimens", [])
+    if isinstance(bundles, list):
+        for idx, bundle in enumerate(bundles):
+            _validate_excluded_bundle(idx, bundle, errors, warnings)
+            if isinstance(bundle, dict):
+                labels = bundle.get("specimen_labels")
+                if isinstance(labels, list):
+                    total += len(labels)
+                    for label_idx, label in enumerate(labels):
+                        if isinstance(label, str) and label.strip():
+                            tag = f"excluded_specimens[{idx}].specimen_labels[{label_idx}]"
+                            label_index[label.strip()].append(tag)
+
     for label, tags in label_index.items():
         if len(tags) > 1:
             errors.append(f"`specimen_label` duplicated across rows: '{label}' in {tags}.")
@@ -761,9 +874,9 @@ def validate_payload(
         errors.append(f"`specimen` total expected {expect_count}, got {total}.")
 
     if payload.get("is_valid") is True and total == 0:
-        errors.append("`is_valid=true` but specimen count is 0.")
+        errors.append("`is_valid=true` but kept CFST specimen count is 0.")
     if payload.get("is_valid") is False and total > 0:
-        errors.append("`is_valid=false` requires all specimen groups to be empty.")
+        errors.append("`is_valid=false` requires `Group_A`/`Group_B`/`Group_C` and `excluded_specimens` to be empty.")
 
     if payload.get("is_valid") is False and payload.get("is_ordinary_cfst") is True:
         errors.append("Invalid paper cannot be marked as ordinary CFST.")
@@ -776,7 +889,7 @@ def validate_payload(
 def main() -> int:
     _assert_sandbox()
     parser = argparse.ArgumentParser(
-        description="Validate single-paper CFST extraction JSON v2.1. Requires CFST_SANDBOX=1."
+        description="Validate single-paper CFST extraction JSON v2.2. Requires CFST_SANDBOX=1."
     )
     parser.add_argument("--json-path", required=True, help="Path to extraction JSON file.")
     parser.add_argument(
@@ -794,7 +907,7 @@ def main() -> int:
         "--expect-count",
         type=int,
         default=None,
-        help="Optional expected total specimen count across Group_A/B/C.",
+        help="Optional expected total kept CFST count across Group_A/B/C plus excluded_specimens.",
     )
     args = parser.parse_args()
 
@@ -816,7 +929,7 @@ def main() -> int:
         args.expect_count,
     )
 
-    print(f"[INFO] Specimen count: {total}")
+    print(f"[INFO] Kept CFST specimen count: {total}")
     if warnings:
         print("[WARN] Validation warnings:")
         for msg in warnings:

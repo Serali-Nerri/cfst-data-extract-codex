@@ -1,4 +1,4 @@
-# Single-Paper Worker Flow V2.1
+# Single-Paper Worker Flow V2.2
 
 Use this file as the worker execution contract for one paper.
 
@@ -75,14 +75,33 @@ If the PDF file does not exist at the given path or cannot be read by the MCP to
 7. Build a structured extraction draft before final JSON assembly.
    - write exactly one non-canonical scratch file at `output/tmp/<paper_id>/_scratch/extraction_draft.yaml`
    - do not write a second JSON file on disk
-   - minimum recommended sections:
-     - `specimen_universe`
-     - `controls_policy`
-     - `replicate_policy`
-     - `materials_map`
-     - `results_map`
-     - `setup_trace`
-     - `ordinary_scope_notes`
+   - required sections:
+     - `specimen_universe`: list of all kept CFST specimens with measured values
+     - `controls_policy`: notes on non-CFST rows excluded before ordinary tagging
+     - `replicate_policy`: notes on grouped-average expansion decisions
+     - `materials_map`: concrete type, modifiers, steel, and geometry evidence
+     - `results_map`: per-specimen ultimate loads from the source table
+     - `setup_trace`: loading mode, boundary, and figure evidence
+     - `ordinary_decisions`: **one entry per specimen** — the upstream ordinary-classification record
+
+   The `ordinary_decisions` section is the authoritative record of the ordinary gate. It must be written **before** the JSON and the JSON must exactly mirror it. Required format per specimen entry:
+
+   ```yaml
+   ordinary_decisions:
+     - label: A-H0
+       concrete_type: high_strength
+       material_modifiers: []           # 0% dosage control — zero-dosage exception applies
+       is_ordinary: true
+       exclusion_reasons: []
+     - label: A-H10
+       concrete_type: high_strength
+       material_modifiers: [expansive_concrete]   # 10% expansive admixture → non-ordinary
+       is_ordinary: false
+       exclusion_reasons: [expansive_concrete]
+   ```
+
+   Verify `material_modifiers` against the non-ordinary blacklist in `extraction-rules.md` section 2.2 while filling `ordinary_decisions`. Do not write `is_ordinary: true` for any entry whose `material_modifiers` list contains a blacklisted modifier.
+
 8. Use `pdf_montage` only when it helps compare already-identified pages side by side.
    - montage is for navigation/comparison only, never for final value reading
    - low DPI broad scanning is optional and conditional; if you need it, prefer roughly `150-200 dpi`
@@ -93,21 +112,28 @@ If the PDF file does not exist at the given path or cannot be read by the MCP to
 11. Identify specimen-bearing tables, setup/loading figures, grouped-average notes, and non-CFST control rows from the viewed page images.
 12. Resolve concrete-strength basis evidence from `Materials`, `Specimens`, `Concrete properties`, notation sections, and table footnotes before assigning `fc_basis`. First search for nearby concrete-strength-grade signals such as `C30`, `C40`, `C50`, `C60`, or `C60/75`, then interpret symbols such as `fck`, `fc`, `f'c`, or `Fc`.
 13. Run the validity gate.
-14. Build the specimen universe for this paper.
-   - keep only CFST specimens for `Group_A` / `Group_B` / `Group_C`
+14. Build the kept CFST specimen universe for this paper.
+   - keep only CFST specimens in the extraction universe
    - exclude hollow steel tube / bare steel tube / empty steel tube / other non-CFST controls before ordinary tagging
 15. Run the ordinary-CFST Tier 1 paper-level preconditions.
 16. Resolve the setup figure from PDF page image evidence.
-17. Extract specimen rows directly from PDF page images.
+17. Extract the kept CFST specimen rows directly from PDF page images.
 18. When a paper reports grouped average measured capacity for an explicit repeated-specimen group, expand the reported group label `G` into `G-1 ... G-q`, assign that same average `n_exp` to each defensibly identified member row, and mark `group_average_n_exp`.
 19. Normalize units and derived values with `scripts/safe_calc.py`.
-20. Run the ordinary-CFST Tier 2 per-specimen evaluation and tag each specimen with `is_ordinary` and `ordinary_exclusion_reasons`.
-21. Derive paper-level `is_ordinary_cfst` and `ordinary_filter` summary from specimen flags.
-22. Build schema-v2.1 JSON from `output/tmp/<paper_id>/_scratch/extraction_draft.yaml` plus the final page-image evidence.
-23. Write that JSON on disk to `temp_json_host_path` from the worker brief. Do not create a worktree-local relative `runs/...` JSON path.
-24. Validate that same file through `temp_json_workspace_path` with the parent-provided `worker_sandbox.py` command.
-25. If validation fails for schema, data, or evidence reasons, repair once, overwrite the same host-backed JSON path, and validate once more.
-26. If validation fails for path, mount, sandbox startup, or ownership reasons, stop and report the failure; do not relocate the JSON and do not create a second copy elsewhere.
+20. Run the ordinary-CFST Tier 2 per-specimen evaluation.
+    - Fill the `ordinary_decisions` section in `extraction_draft.yaml` FIRST — one row per specimen listing `concrete_type`, `material_modifiers`, and the verdict (`is_ordinary` + `exclusion_reasons`).
+    - Apply the non-ordinary modifier blacklist from `extraction-rules.md` section 2.2 before committing any `is_ordinary: true` entry.
+    - Only after the YAML `ordinary_decisions` section is complete and consistent, copy those verdicts into the JSON specimen rows.
+    - `is_ordinary` and `material_modifiers` in the JSON must exactly match the YAML record; any divergence is a bug.
+21. Split the tagged kept CFST universe into:
+   - ordinary rows written in `Group_A` / `Group_B` / `Group_C`
+   - grouped non-ordinary bundles written in top-level `excluded_specimens`
+22. Derive paper-level `is_ordinary_cfst` and `ordinary_filter` summary from the split output.
+23. Build schema-v2.2 JSON from `output/tmp/<paper_id>/_scratch/extraction_draft.yaml` plus the final page-image evidence.
+24. Write that JSON on disk to `temp_json_host_path` from the worker brief. Do not create a worktree-local relative `runs/...` JSON path.
+25. Validate that same file through `temp_json_workspace_path` with the parent-provided `worker_sandbox.py` command.
+26. If validation fails for schema, data, or evidence reasons, repair once, overwrite the same host-backed JSON path, and validate once more.
+27. If validation fails for path, mount, sandbox startup, or ownership reasons, stop and report the failure; do not relocate the JSON and do not create a second copy elsewhere.
 
 ## 4. Validity Gate
 
@@ -125,17 +151,18 @@ For invalid papers:
 - `is_valid=false`
 - `is_ordinary_cfst=false`
 - empty specimen groups
+- empty `excluded_specimens`
 - non-empty single-line `reason`
 
 ## 5. Ordinary-CFST Gate (Two-Tier, Specimen-Level)
 
-Even when `is_valid=true`, evaluate each specimen individually for ordinary-CFST inclusion using the two-tier model defined in `references/extraction-rules.md` section 2.
+Even when `is_valid=true`, evaluate the full kept CFST specimen universe for ordinary-CFST inclusion using the two-tier model defined in `references/extraction-rules.md` section 2.
 
-The ordinary gate applies only to the kept CFST specimen rows. Non-CFST controls are excluded before this stage and must not be written into `Group_A`, `Group_B`, or `Group_C`.
+The ordinary gate applies only to the kept CFST specimen universe. Non-CFST controls are excluded before this stage and must not be written into `Group_A`, `Group_B`, `Group_C`, or `excluded_specimens`.
 
 ### Tier 1 -- Paper-Level Preconditions
 
-Check once for the whole paper. If any fails, set all specimens to `is_ordinary=false` with the paper-level reason in each specimen's `ordinary_exclusion_reasons`.
+Check once for the whole paper. If any fails, treat the entire kept CFST specimen universe as non-ordinary and carry the paper-level reason into the resulting `excluded_specimens` bundles.
 
 - `test_temperature = ambient`
 - `loading_regime = static`
@@ -143,29 +170,47 @@ Check once for the whole paper. If any fails, set all specimens to `is_ordinary=
 
 ### Tier 2 -- Per-Specimen Evaluation
 
+**Two-layer material classification**: classify concrete in two independent fields.
+
+- `concrete_type`: base family only — `normal`, `high_strength`, `recycled`, `lightweight`, `self_consolidating`, `uhpc`, `other`, `unknown`.
+- `material_modifiers`: list of modification tags — `expansive_concrete`, `rubber_concrete`, `self_stressing_concrete`, `reactive_powder`, `fiber_reinforced`, `polymer_modified`, `geopolymer`, `foamed_concrete`, `other_modified_concrete`, etc. Use `[]` for plain concrete.
+
+Concrete classification priority:
+
+1. Determine the base class (`normal` / `high_strength` / `recycled` / etc.).
+2. Separately scan for modifier evidence: expansive agent, 膨胀剂, 补偿收缩, 橡胶颗粒, 橡胶混凝土, 自应力, 活性粉末, RPC, 纤维, 聚合物改性, 地聚物, 泡沫混凝土, etc.
+3. If any modifier evidence is present, record it in `material_modifiers`.
+4. Do not keep such specimens as ordinary unless the rule explicitly allows that modifier.
+5. For mixed papers, classify specimen by specimen — not at paper level.
+
+Do not infer ordinary status from `concrete_type=high_strength` or `concrete_type=recycled` alone.
+
 When Tier 1 passes, check each specimen individually:
 
 - `section_shape in {circular, square, rectangular, round-ended}`
 - `steel_type = carbon_steel`
 - `concrete_type in {normal, high_strength, recycled}`
+- `material_modifiers` is empty or contains no non-ordinary modifier (see `extraction-rules.md` section 2.2)
 - `loading_pattern = monotonic`
 - eccentric compression is single-direction when present
 - no strengthening or special confinement
 - recycled aggregate `R%` is explicitly extractable when `concrete_type = recycled`
 
-Tag each specimen:
+A zero-dosage plain-control row in a modified-mix paper may be ordinary if its own row carries no active modifier (`material_modifiers=[]`); explain the decision in `source_evidence`.
+
+Tag each kept CFST specimen:
 
 - `is_ordinary = true` with `ordinary_exclusion_reasons = []` when all conditions pass
 - `is_ordinary = false` with non-empty `ordinary_exclusion_reasons` listing each failing condition
 
 ### Paper-Level Derivation
 
-After all specimens are tagged, derive paper-level fields:
+After the kept CFST specimen universe is tagged and split, derive paper-level fields:
 
-- `is_ordinary_cfst` = true when at least one specimen has `is_ordinary=true`
+- `is_ordinary_cfst` = true when at least one row is kept in `Group_A` / `Group_B` / `Group_C`
 - `ordinary_filter.include_in_dataset` = `is_ordinary_cfst`
-- `ordinary_filter.ordinary_count` = count of ordinary specimens
-- `ordinary_filter.total_count` = total specimen count
+- `ordinary_filter.ordinary_count` = count of ordinary rows kept in `Group_A` / `Group_B` / `Group_C`
+- `ordinary_filter.total_count` = total kept CFST specimen count = ordinary group rows + represented excluded bundle members
 - `ordinary_filter.special_factors`: paper-level special tags
 - `ordinary_filter.exclusion_reasons`: paper-level exclusion summaries
 
@@ -182,7 +227,7 @@ Store the resolved setup trace in:
 - `paper_level.loading_mode`
 - `paper_level.setup_figure` (with `image_path = null` and `page` set to the PDF page number)
 - specimen `loading_mode`
-- specimen `evidence.setup_image` (set to `null`; the page reference goes in `evidence.page` or `paper_level.setup_figure.page`)
+- `paper_level.setup_figure.page` (the page reference for the setup figure)
 
 ## 7. Direct PDF Reading
 
@@ -221,6 +266,30 @@ const hits = textIndex.matched_pages || [];
 ```
 
 This note is specifically for `js_repl` + `codex.tool(...)`. Outside that wrapper, follow the runtime's normal tool-return convention. The returned object includes `cache_path`, which points to the MCP-managed on-disk JSON cache for the text layer, plus optional inline `pages` depending on `include_pages`, `preview_pages`, and `matched_pages_only`.
+
+### 7.2 Page Region Cropping
+
+When a rendered page is too large or too dense to read individual rows clearly, crop to the region of interest before calling `view_image`.
+
+**Workflow:**
+
+1. Re-render the target page at higher DPI if not already done — use `pdf_pages` with `dpi=600` or `dpi=1200`.
+2. Check the rendered image dimensions with `identify <image_path>`. Note: `magick` may not be available on all systems; use `identify` and `convert` (ImageMagick classic CLI) instead.
+3. Crop the region of interest:
+   ```bash
+   convert <image_path> -crop WxH+X+Y +repage /tmp/<paper_id>_crop.png
+   ```
+   where `W`×`H` is the crop size in pixels and `X,Y` is the top-left corner offset.
+4. Call `view_image` on the cropped file path.
+5. Store crops in `/tmp/` only — they are temporary reading aids, not output artifacts.
+
+**When to crop:**
+
+- Specimen results tables occupying only part of a large high-DPI page
+- Steel-property or mix-proportion tables with narrow columns that remain unreadable at 300 DPI
+- Table headers or footnotes cut off when the table spans page boundaries
+
+**Do not** crop as a substitute for high DPI. Re-render at high DPI first; add cropping only when isolating a sub-region of an already high-DPI image is necessary to confirm individual cell values.
 
 ## 8. Concrete-Strength Basis Rules
 
@@ -281,50 +350,40 @@ Use the same wrapper shape for other derived values and unit conversions; do not
 
 ## 10. Evidence Rules
 
-Every specimen row must preserve:
+### 10.1 Ordinary Specimen Evidence
+
+Every ordinary specimen row must contain a concise `source_evidence` string. No `evidence` object is required.
+
+`source_evidence` must:
+
+- be a non-empty single-line string
+- identify the PDF page(s) and table/figure/text locator(s) for each stored value
+- state explicitly when `n_exp` is a reported group average rather than an individually measured value
+- explain derivations or notation resolutions inline (e.g., unit conversion, `r0 = D/2`, `fck` notation resolved to cube basis)
+
+When page localization cannot be determined, state the best available locator rather than inventing a page number.
+
+When a value is derived or the basis is inferred from code/notation context (e.g., GB/T 50010 `C60` grade resolving `fc_basis = cube`), explain it inline in `source_evidence`.
+
+When a stored value is converted to canonical units, mark `quality_flags += ["unit_converted"]` and note the original value and unit in `source_evidence`.
+
+### 10.2 Excluded Bundle Evidence
+
+Every `excluded_specimens` bundle must preserve:
 
 - concise `source_evidence`
-- structured `evidence.page`
-- `evidence.table_id`
-- `evidence.figure_id`
-- `evidence.table_image`
-- `evidence.setup_image`
-- `evidence.value_origin`
+- structured `reason_evidence` containing:
+  - `page`
+  - `table_id`
+  - `figure_id`
+  - `table_image`
+  - `setup_image`
+  - `source`
+  - `raw_texts`
 
-`evidence.page` is required and should always be populated since the worker knows which PDF page it read. Use explicit wording such as `Page 4` in both `evidence.page` and `source_evidence`.
+`reason_evidence.raw_texts` must be a non-empty list of unique source strings that justify the exclusion.
 
-`evidence.table_image` may be `null` when the paper is read directly from PDF. The page reference in `evidence.page` serves as the locator for the specimen-bearing table.
-
-`evidence.setup_image` may be `null`. The page reference goes in `evidence.page` or `paper_level.setup_figure.page`.
-
-If page localization still cannot be determined, set `evidence.page = null` and keep the best available table/figure/text locator in `source_evidence` rather than inventing a page number.
-
-When a stored value is converted to canonical units, keep the original raw unit/value trace in `evidence.value_origin` and preserve `quality_flags` such as `unit_converted`.
-
-When a value is derived, the field-level evidence must record:
-
-- formula
-- raw text
-- raw unit if any
-- source location
-
-### 10.1 Reducing Redundancy in `value_origin`
-
-When many specimens share identical evidence (e.g., all specimens use the same concrete strength from a single material section), you may simplify the JSON using one of these approaches:
-
-1. **Omit fully redundant entries**: If **all specimens** share identical `value_origin` for a field (e.g., `fc_value`, `e1`, `e2`), document the shared evidence once in `paper_level.notes` and omit those fields from individual specimen `value_origin` objects.
-
-2. **Use minimal row-specific entries**: For fields extracted from a specimen table where only the row identifier changes (e.g., `fy`, `b`, `h`, `t`, `L`, `n_exp`), you may shorten the `source` to just the table name instead of repeating "Page X Table Y row SC-Z" for every specimen. The row identifier is already implicit in `specimen_label`.
-
-3. **Add `paper_level.shared_evidence`**: Store evidence that applies to all specimens in an optional `paper_level.shared_evidence` object, then omit those fields from individual specimen `value_origin` objects.
-
-**Default**: If unsure whether evidence is truly shared or if simplification might lose traceability, **keep the full `value_origin` for every specimen**. Redundancy is acceptable; loss of provenance is not.
-
-For `fc_basis` decisions:
-
-- cite the exact `Materials` / `Specimens` / `Concrete properties` paragraph, table header, or table footnote when available
-- if you rely on code/notation context such as GB/T 50010 `C60`, Eurocode `C60/75`, ACI `f'c`, or Japanese `Fc`, name that context explicitly in `source_evidence`
-- do not leave a context-inferred `fc_basis` unexplained in `source_evidence`
+For `fc_basis` decisions inferred from code/notation context, name that context explicitly in `source_evidence` and mark `quality_flags += ["context_inferred_fc_basis"]`.
 
 ## 11. Validation Expectations
 
@@ -340,18 +399,22 @@ Validation must reject:
 - missing or blank `specimen_label`
 - invalid `fc_basis`
 - impossible dimensions or strengths
-- `is_valid=false` with non-empty specimen groups
+- `is_valid=false` with non-empty specimen groups or non-empty `excluded_specimens`
 - axial rows with nonzero eccentricity
 - eccentric rows with both eccentricities zero
 - non-null `fcy150` values that are non-numeric or non-positive
 - `is_ordinary=true` with shapes outside circular / square / rectangular / round-ended
 - `is_ordinary=true` with non-carbon steel
 - `is_ordinary=true` with concrete types outside normal / high-strength / recycled
+- `is_ordinary=true` with non-ordinary `material_modifiers` (e.g. `expansive_concrete`, `fiber_reinforced`, etc.)
 - `is_ordinary=true` with `loading_pattern != monotonic`
-- `is_ordinary=false` with empty `ordinary_exclusion_reasons`
+- any row kept in `Group_A` / `Group_B` / `Group_C` with `is_ordinary=false`
+- any excluded bundle with empty `ordinary_exclusion_reasons`
+- any excluded bundle with missing `specimen_labels`, `source_evidence`, or `reason_evidence`
 - `is_ordinary_cfst=true` but no specimen has `is_ordinary=true`
 - `is_ordinary_cfst=false` but some specimen has `is_ordinary=true`
-- `ordinary_filter.ordinary_count` mismatch with actual count of `is_ordinary=true` specimens
+- `ordinary_filter.ordinary_count` mismatch with actual count of ordinary rows
+- `ordinary_filter.total_count` mismatch with ordinary rows plus represented excluded bundle members
 - per-specimen `loading_pattern` not in allowed specimen-level values
 - duplicate specimen labels
 
